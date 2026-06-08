@@ -3,6 +3,7 @@ add_library(mparse_analysis
     algo/expand_empty_items.cpp
     algo/resolve_empty_cycles.cpp
     analyze.cpp
+    automaton.cpp
     error.cpp
     rule.cpp
     statistics.cpp

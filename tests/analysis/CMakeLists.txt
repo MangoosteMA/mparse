@@ -1,4 +1,5 @@
 add_executable(mparse_analysis_tests
+    automaton_test.cpp
     expand_empty_items_test.cpp
     statistics_test.cpp
 )
