@@ -1,0 +1,25 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 0
+IndentPPDirectives: BeforeHash
+AlignAfterOpenBracket: BlockIndent
+
+AllowShortLambdasOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Empty
+NamespaceIndentation: All
+AlwaysBreakTemplateDeclarations: Yes
+AccessModifierOffset: -4
+SpaceAfterTemplateKeyword: true
+SpaceAfterCStyleCast: true
+InsertBraces: true
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+BinPackParameters: false
+PackConstructorInitializers: Never
+BreakConstructorInitializers: BeforeComma
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: false
+
+PenaltyBreakBeforeMemberAccess: 0
+ContinuationIndentWidth: 4
