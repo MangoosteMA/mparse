@@ -1,0 +1,15 @@
+expanded grammar statistics:
+  symbols: 4
+  rules: 6
+  items: 6
+symbol statistics:
+  A at 1:1: rules=3, items=2
+    rule 0: items=1
+    rule 1: items=0
+    rule 2: items=1
+  AAfterEmptyPart at 1:1: rules=1, items=1
+    rule 0: items=1
+  ABeforeEmptyPart at 1:1: rules=0, items=0
+  B at 1:1: rules=2, items=3
+    rule 0: items=1
+    rule 1: items=2

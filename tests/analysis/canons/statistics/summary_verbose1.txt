@@ -1,0 +1,4 @@
+grammar statistics:
+  symbols: 2
+  rules: 4
+  items: 4

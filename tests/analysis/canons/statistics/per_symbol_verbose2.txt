@@ -1,0 +1,11 @@
+grammar statistics:
+  symbols: 2
+  rules: 4
+  items: 4
+symbol statistics:
+  A at 1:1: rules=2, items=1
+    rule 0: items=0
+    rule 1: items=1
+  B at 1:1: rules=2, items=3
+    rule 0: items=1
+    rule 1: items=2
