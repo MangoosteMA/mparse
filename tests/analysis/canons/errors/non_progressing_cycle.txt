@@ -1,0 +1,1 @@
+non-progressing cycle found: A at 10:2 -> B at 20:3 -> A at 10:2

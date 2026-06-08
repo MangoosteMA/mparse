@@ -1,5 +1,6 @@
 #include "error.h"
 
+#include <analysis/algo/find_empty_end_cycles.h>
 #include <analysis/algo/resolve_empty_cycles.h>
 #include <analysis/symbol.h>
 #include <mparse/utils.h>
@@ -68,6 +69,27 @@ namespace mparse::analysis {
 
         return AnalysisError(
             AnalysisErrorKind::NonProgressingCycle,
+            std::move(message),
+            std::move(source_references)
+        );
+    }
+
+    AnalysisError makeEmptyEndCycleError(const EmptyEndCycle& cycle) {
+        std::vector<AnalysisErrorSourceReference> source_references;
+        source_references.reserve(cycle.symbols.size());
+
+        for (const auto& symbol : cycle.symbols) {
+            source_references.push_back(AnalysisErrorSourceReference{
+                .name = symbol->name(),
+                .source_reference = symbol->sourceReference(),
+            });
+        }
+
+        auto message = "empty end-to-end automaton cycle found: " +
+                       formatCycle(source_references);
+
+        return AnalysisError(
+            AnalysisErrorKind::EmptyEndCycle,
             std::move(message),
             std::move(source_references)
         );

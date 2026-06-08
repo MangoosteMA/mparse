@@ -1,5 +1,6 @@
 add_executable(mparse_analysis_tests
     automaton_test.cpp
+    empty_cycle_test.cpp
     expand_empty_items_test.cpp
     statistics_test.cpp
 )
@@ -20,7 +21,7 @@ add_custom_target(update_analysis_canons
         ${CMAKE_COMMAND} -E env
         MPARSE_UPDATE_CANONS=1
         $<TARGET_FILE:mparse_analysis_tests>
-        --gtest_filter=GrammarStatistics.*
+        --gtest_filter=GrammarStatistics.*:Analyze.ThrowsOnUnresolved*
     DEPENDS mparse_analysis_tests
     COMMENT "Update analysis canon files"
 )

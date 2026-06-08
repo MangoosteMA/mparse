@@ -1,6 +1,7 @@
 #include "analyze.h"
 
 #include <analysis/algo/expand_empty_items.h>
+#include <analysis/algo/find_empty_end_cycles.h>
 #include <analysis/algo/resolve_empty_cycles.h>
 #include <analysis/error.h>
 #include <analysis/symbols_storage.h>
@@ -29,6 +30,9 @@ namespace mparse::analysis {
                 );
             }
 
+            if (auto empty_end_cycle = findEmptyEndCycle(symbols_storage)) {
+                throw makeEmptyEndCycleError(*empty_end_cycle);
+            }
         }
 
         // TODO: do more checks and analysis

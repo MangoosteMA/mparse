@@ -1,0 +1,1 @@
+non-progressing cycle found: A at 7:5 -> E at 3:1 -> B at 13:2 -> A at 7:5

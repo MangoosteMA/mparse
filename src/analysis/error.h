@@ -9,10 +9,12 @@
 namespace mparse::analysis {
 
     struct EmptyCycle;
+    struct EmptyEndCycle;
     class Symbol;
 
     enum class AnalysisErrorKind {
         NonProgressingCycle,
+        EmptyEndCycle,
         UnsupportedSelfStartingRule,
     };
 
@@ -40,6 +42,7 @@ namespace mparse::analysis {
     };
 
     AnalysisError makeNonProgressingCycleError(const EmptyCycle& cycle);
+    AnalysisError makeEmptyEndCycleError(const EmptyEndCycle& cycle);
     AnalysisError makeUnsupportedSelfStartingRuleError(const Symbol& symbol);
 
 } // namespace mparse::analysis
