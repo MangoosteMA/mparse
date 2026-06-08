@@ -1,0 +1,17 @@
+#include <string>
+
+// mparse: begin grammar
+
+Expression<int>
+    : Term { $$ = $1 }
+    : Expression '+' Term { $$ = $1 + $3 }
+
+Integer<int>
+    : '0'-'9' { $$ = $1 }
+    : 'text' {}
+
+Parameterized[offset int]<int>
+    : Parameterized[offset + 1] Integer { $$ = $2 }
+
+// mparse: end grammar
+

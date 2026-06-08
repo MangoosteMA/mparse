@@ -1,0 +1,6 @@
+before
+// mparse: begin grammar
+Root
+    : 'x' {}
+// mparse: end grammar
+after

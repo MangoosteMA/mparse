@@ -1,0 +1,5 @@
+before
+// mparse: begin grammar
+generated
+// mparse: end grammar
+after

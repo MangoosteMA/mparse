@@ -1,0 +1,4 @@
+// mparse: begin grammar
+Integer<int>
+    : ('0'-'9')+ { $$ = $1 }
+// mparse: end grammar
