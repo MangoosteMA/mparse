@@ -29,7 +29,7 @@ execute_process(
 
 if(NOT generation_result EQUAL 0)
     message(FATAL_ERROR
-        "Failed to generate hex color example.\n"
+        "Failed to generate ${example_name} example.\n"
         "stdout:\n${generation_output}\n"
         "stderr:\n${generation_error}"
     )
@@ -47,7 +47,7 @@ execute_process(
 
 if(NOT compile_result EQUAL 0)
     message(FATAL_ERROR
-        "Failed to compile generated hex color example.\n"
+        "Failed to compile generated ${example_name} example.\n"
         "stdout:\n${compile_output}\n"
         "stderr:\n${compile_error}"
     )
@@ -63,7 +63,7 @@ execute_process(
 
 if(NOT run_result EQUAL 0)
     message(FATAL_ERROR
-        "Generated hex color example failed.\n"
+        "Generated ${example_name} example failed.\n"
         "stdout:\n${run_output}\n"
         "stderr:\n${run_error}"
     )

@@ -255,7 +255,7 @@ namespace mparse::spec {
         }
 
         if (peek() == '(') {
-            fail("grouped expressions and quantifiers are not supported yet");
+            fail("grouped expressions and non-literal quantifiers are not supported yet");
         }
 
         return RuleItem{.value = parseSymbolReference()};
@@ -266,6 +266,12 @@ namespace mparse::spec {
         skipHorizontalSpaces();
 
         if (!consumeIf('-')) {
+            if (consumeIf('^')) {
+                return RuleItemRepeatedLiteral{
+                    .value = first_literal,
+                    .count_expression = parseRepeatCountExpression(),
+                };
+            }
             return RuleItemLiteral{.value = first_literal};
         }
 
@@ -279,6 +285,56 @@ namespace mparse::spec {
             .from = first_literal.front(),
             .to = second_literal.front(),
         };
+    }
+
+    std::string Parser::parseRepeatCountExpression() {
+        skipHorizontalSpaces();
+
+        if (peek() == '(') {
+            return parseBalanced('(', ')');
+        }
+
+        const size_t begin = position_;
+        size_t depth = 0;
+        bool inside_literal = false;
+        bool escaped = false;
+
+        while (!eof() && peek() != '\n' && peek() != '{') {
+            const char current = peek();
+
+            if (inside_literal) {
+                consume();
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '\'') {
+                    inside_literal = false;
+                }
+                continue;
+            }
+
+            if (current == '\'') {
+                inside_literal = true;
+            } else if (current == '[' || current == '(' || current == '<' || current == '{') {
+                depth++;
+            } else if (current == ']' || current == ')' || current == '>' || current == '}') {
+                if (depth == 0) {
+                    break;
+                }
+                depth--;
+            } else if (std::isspace(static_cast<unsigned char>(current)) && depth == 0) {
+                break;
+            }
+
+            consume();
+        }
+
+        auto result = trim(source_.substr(begin, position_ - begin));
+        if (result.empty()) {
+            fail("expected repeat count expression after '^'");
+        }
+        return result;
     }
 
     std::string Parser::parseLiteralText() {

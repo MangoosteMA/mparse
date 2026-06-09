@@ -10,6 +10,10 @@ namespace mparse::spec {
         return from > to;
     }
 
+    bool RuleItemRepeatedLiteral::empty() const {
+        return value.empty();
+    }
+
     std::string SourceTemplate::insert(std::string_view content) const {
         std::string result;
         result.reserve(before_insertion.size() + content.size() + after_insertion.size());

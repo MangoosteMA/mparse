@@ -13,6 +13,8 @@ namespace mparse::codegen::cpp {
     struct ActionFunctionSignature {
         std::string result_type;
         std::vector<std::string> input_types;
+        std::string parameters_declaration;
+        std::string parameters_forwarding;
     };
 
     using ActionNodeIds =
@@ -22,7 +24,8 @@ namespace mparse::codegen::cpp {
 
     void emitActionFunctionForwardDeclaration(
         Writer& writer,
-        size_t action_index
+        size_t action_index,
+        const ActionFunctionSignature& signature
     );
 
     void emitActionFunction(

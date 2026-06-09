@@ -136,6 +136,8 @@ Transition types:
 - `LiteralTransition`: consumes a string literal and produces `std::string`.
 - `RangeTransition`: consumes one character in an inclusive range and produces
   `char`.
+- `RepeatedLiteralTransition`: consumes a literal repeated by a raw C++ count
+  expression and produces the matched `std::string`.
 - `SymbolTransition`: runs another symbol parser and produces that symbol's
   value type.
 - `ReduceTransition`: runs an action tree and produces the current symbol's

@@ -54,6 +54,10 @@ Expected output:
 
 The example is also checked by the CTest suite.
 
+`examples/cpp/parameterized_outline.cpp` demonstrates parameterized grammar
+symbols. It parses an indented outline while carrying the current indentation
+through `Item[indent + 2]` and matching exact indentation with `' '^indent`.
+
 ## Canon Files
 
 Some tests compare text output with canon files stored next to their test

@@ -13,5 +13,8 @@ Integer<int>
 Parameterized[offset int]<int>
     : Parameterized[offset + 1] Integer { $$ = $2 }
 
-// mparse: end grammar
+Indent[offset int]<std::string>
+    : ' '^offset { $$ = $1 }
+    : ' '^(offset + 1) { $$ = $1 }
 
+// mparse: end grammar

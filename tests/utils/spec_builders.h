@@ -10,6 +10,7 @@ namespace mparse::tests {
 
     spec::RuleItem symbolItem(std::string name);
     spec::RuleItem literalItem(std::string value);
+    spec::RuleItem repeatedLiteralItem(std::string value, std::string count_expression);
     spec::RuleItem rangeItem(char from, char to);
 
     spec::Rule rule(

@@ -144,7 +144,8 @@ namespace mparse::codegen::cpp {
             const analysis::ActionTreeNode& action,
             const std::vector<std::string>& input_types,
             const ActionNodeIds& action_node_ids,
-            const ActionFunctionSignatures& action_signatures
+            const ActionFunctionSignatures& action_signatures,
+            std::string_view parameters_forwarding
         ) {
             std::string result;
             const auto argument_types =
@@ -169,7 +170,7 @@ namespace mparse::codegen::cpp {
                 }
                 result += "    resolved_args.push_back(" +
                           actionFunctionName(action_node_ids.at(VERIFY(edge.node).get())) +
-                          "(nested_args));\n";
+                          "(nested_args" + std::string{parameters_forwarding} + "));\n";
                 result += "}\n";
 
                 cursor = edge.offset_right;
@@ -197,7 +198,8 @@ namespace mparse::codegen::cpp {
                     action,
                     signature.input_types,
                     action_node_ids,
-                    action_signatures
+                    action_signatures,
+                    signature.parameters_forwarding
                 );
                 args_name = "resolved_args";
                 argument_types = actionArgumentTypes(
@@ -240,7 +242,8 @@ namespace mparse::codegen::cpp {
                 action,
                 signature.input_types,
                 action_node_ids,
-                action_signatures
+                action_signatures,
+                signature.parameters_forwarding
             );
             body += "return resolved_args.at(0);\n";
             return indent(body, "    ");
@@ -250,11 +253,13 @@ namespace mparse::codegen::cpp {
 
     void emitActionFunctionForwardDeclaration(
         Writer& writer,
-        size_t action_index
+        size_t action_index,
+        const ActionFunctionSignature& signature
     ) {
         writer.line(
             "static std::any " + actionFunctionName(action_index) +
-            "(const std::vector<std::any>& args);"
+            "(const std::vector<std::any>& args" +
+            signature.parameters_declaration + ");"
         );
     }
 
@@ -293,6 +298,7 @@ namespace mparse::codegen::cpp {
             actionFunctionTemplate(),
             nlohmann::json{
                 {"action_name", actionFunctionName(action_index)},
+                {"parameters_declaration", signature.parameters_declaration},
                 {"body", body},
             }
         ));

@@ -53,6 +53,9 @@ namespace mparse::analysis {
                     [](const spec::RuleItemRange& range) {
                         return range.empty();
                     },
+                    [](const spec::RuleItemRepeatedLiteral& literal) {
+                        return literal.empty();
+                    },
                     [&](const spec::RuleItemSymbol& item_symbol) {
                         return can_symbol_be_empty[item_symbol.name];
                     },

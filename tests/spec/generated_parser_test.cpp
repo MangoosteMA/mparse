@@ -59,6 +59,18 @@ namespace {
             return;
         }
 
+        if (const auto* actual_repeated =
+                std::get_if<mparse::spec::RuleItemRepeatedLiteral>(&actual)) {
+            const auto& expected_repeated =
+                std::get<mparse::spec::RuleItemRepeatedLiteral>(expected);
+            EXPECT_EQ(actual_repeated->value, expected_repeated.value);
+            EXPECT_EQ(
+                actual_repeated->count_expression,
+                expected_repeated.count_expression
+            );
+            return;
+        }
+
         const auto& actual_symbol = std::get<mparse::spec::RuleItemSymbol>(actual);
         const auto& expected_symbol = std::get<mparse::spec::RuleItemSymbol>(expected);
         EXPECT_EQ(actual_symbol.name, expected_symbol.name);
@@ -127,4 +139,5 @@ TEST(GeneratedSpecParser, MatchesHandParserOnSpecFixtures) {
 TEST(GeneratedSpecParser, MatchesHandParserOnExamples) {
     expectGeneratedParserMatchesHandParser(projectPath("examples/cpp/hex_color.cpp"));
     expectGeneratedParserMatchesHandParser(projectPath("examples/cpp/nested_actions.cpp"));
+    expectGeneratedParserMatchesHandParser(projectPath("examples/cpp/parameterized_outline.cpp"));
 }

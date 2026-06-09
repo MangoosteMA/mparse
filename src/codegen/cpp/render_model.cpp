@@ -143,6 +143,7 @@ namespace mparse::codegen::cpp {
             const analysis::ActionTreeNodePtr& action,
             std::string result_type,
             std::vector<std::string> input_types,
+            const analysis::SymbolPtr& parameter_scope,
             const analysis::GrammarAutomata& automata,
             ActionCodegenData& action_data
         ) {
@@ -152,12 +153,16 @@ namespace mparse::codegen::cpp {
                 ActionFunctionSignature{
                     .result_type = result_type,
                     .input_types = input_types,
+                    .parameters_declaration = parametersDeclaration(parameter_scope),
+                    .parameters_forwarding = parametersForwarding(parameter_scope),
                 }
             );
 
             if (!inserted) {
                 VERIFY(iterator->second.result_type == result_type);
                 VERIFY(iterator->second.input_types == input_types);
+                VERIFY(iterator->second.parameters_declaration == parametersDeclaration(parameter_scope));
+                VERIFY(iterator->second.parameters_forwarding == parametersForwarding(parameter_scope));
                 return;
             }
 
@@ -169,6 +174,7 @@ namespace mparse::codegen::cpp {
                     edge.node,
                     actionEdgeResultType(edge, input_types, automata),
                     child_input_types,
+                    parameter_scope,
                     automata,
                     action_data
                 );
@@ -196,6 +202,7 @@ namespace mparse::codegen::cpp {
                             reduce->action,
                             reduce->result_type,
                             reduce->argument_types,
+                            automaton.symbol,
                             automata,
                             action_data
                         );
@@ -253,6 +260,10 @@ namespace mparse::codegen::cpp {
                     [](const spec::RuleItemRange& range) {
                         return "'" + escapeGrammarLiteral(std::string{range.from}) +
                                "'-'" + escapeGrammarLiteral(std::string{range.to}) + "'";
+                    },
+                    [](const spec::RuleItemRepeatedLiteral& literal) {
+                        return "'" + escapeGrammarLiteral(literal.value) + "'^" +
+                               literal.count_expression;
                     },
                     [](const spec::RuleItemSymbol& symbol) {
                         auto result = symbol.name;
@@ -357,7 +368,11 @@ namespace mparse::codegen::cpp {
             const ActionCodegenData& action_data
         ) {
             for (size_t action_index = 0; action_index < action_data.action_nodes.size(); action_index++) {
-                emitActionFunctionForwardDeclaration(writer, action_index);
+                emitActionFunctionForwardDeclaration(
+                    writer,
+                    action_index,
+                    action_data.action_signatures.at(action_data.action_nodes.at(action_index))
+                );
             }
             writer.line();
 
@@ -497,6 +512,24 @@ namespace mparse::codegen::cpp {
             ));
         }
 
+        void emitRepeatedLiteralEdgeGeneratorCase(
+            Writer& writer,
+            const analysis::SymbolAutomaton& automaton,
+            const analysis::AutomatonEdge& edge,
+            size_t edge_index,
+            const analysis::RepeatedLiteralTransition& literal
+        ) {
+            writer.write(renderTemplate(
+                repeatedLiteralEdgeGeneratorCaseTemplate(),
+                nlohmann::json{
+                    {"edge_index", edge_index},
+                    {"literal", escapeStringLiteral(literal.value)},
+                    {"count_expression", literal.count_expression},
+                    {"next_generator", makeVertexGenerator(automaton.symbol, edge.target, "input_", "position_ + repeated_size", "std::move(next_stack)")},
+                }
+            ));
+        }
+
         void emitSymbolEdgeGeneratorCase(
             Writer& writer,
             const analysis::SymbolAutomaton& automaton,
@@ -538,6 +571,7 @@ namespace mparse::codegen::cpp {
                     {"edge_index", edge_index},
                     {"left_brace", "{"},
                     {"action_name", actionFunctionName(reduce_action_ids.at(&reduce))},
+                    {"parameters_forwarding", parametersForwarding(automaton.symbol)},
                     {"right_brace", "}"},
                     {"next_generator", makeVertexGenerator(automaton.symbol, edge.target, "input_", "position_", "std::move(next_stack)")},
                 }
@@ -558,6 +592,9 @@ namespace mparse::codegen::cpp {
                     },
                     [&](const analysis::RangeTransition& range) {
                         emitRangeEdgeGeneratorCase(writer, automaton, edge, edge_index, range);
+                    },
+                    [&](const analysis::RepeatedLiteralTransition& literal) {
+                        emitRepeatedLiteralEdgeGeneratorCase(writer, automaton, edge, edge_index, literal);
                     },
                     [&](const analysis::SymbolTransition& symbol) {
                         emitSymbolEdgeGeneratorCase(writer, automaton, edge, edge_index, symbol);

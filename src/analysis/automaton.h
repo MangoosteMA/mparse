@@ -24,6 +24,11 @@ namespace mparse::analysis {
         char to;
     };
 
+    struct RepeatedLiteralTransition {
+        std::string value;
+        std::string count_expression;
+    };
+
     struct SymbolTransition {
         SymbolPtr symbol;
         std::vector<std::string> arguments;
@@ -38,6 +43,7 @@ namespace mparse::analysis {
     using AutomatonTransition = std::variant<
         LiteralTransition,
         RangeTransition,
+        RepeatedLiteralTransition,
         SymbolTransition,
         ReduceTransition>;
 

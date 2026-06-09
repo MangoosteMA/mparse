@@ -27,7 +27,7 @@ TEST(SpecReader, ParsesSymbolsRulesLiteralsRangesAndActions) {
         sourcePath("valid_spec.grammar")
     );
 
-    ASSERT_EQ(specification.symbols.size(), 3);
+    ASSERT_EQ(specification.symbols.size(), 4);
 
     const auto& expression = specification.symbols[0];
     EXPECT_EQ(expression.name, "Expression");
@@ -78,11 +78,31 @@ TEST(SpecReader, ParsesSymbolsRulesLiteralsRangesAndActions) {
     EXPECT_EQ(symbol_reference->name, "Parameterized");
     ASSERT_EQ(symbol_reference->arguments.size(), 1);
     EXPECT_EQ(symbol_reference->arguments[0], "offset + 1");
+
+    const mparse::spec::Symbol& indent = specification.symbols[3];
+    EXPECT_EQ(indent.source_reference.line, 16);
+    EXPECT_EQ(indent.source_reference.column, 1);
+    ASSERT_EQ(indent.rules.size(), 2);
+
+    const auto* repeated_literal =
+        std::get_if<mparse::spec::RuleItemRepeatedLiteral>(&indent.rules[0].items[0].value);
+    ASSERT_NE(repeated_literal, nullptr);
+    EXPECT_EQ(repeated_literal->value, " ");
+    EXPECT_EQ(repeated_literal->count_expression, "offset");
+    EXPECT_FALSE(repeated_literal->empty());
+
+    const auto* parenthesized_repeated_literal =
+        std::get_if<mparse::spec::RuleItemRepeatedLiteral>(&indent.rules[1].items[0].value);
+    ASSERT_NE(parenthesized_repeated_literal, nullptr);
+    EXPECT_EQ(parenthesized_repeated_literal->value, " ");
+    EXPECT_EQ(parenthesized_repeated_literal->count_expression, "offset + 1");
 }
 
 TEST(SpecReader, DetectsEmptyLiteralAndRangeItems) {
     EXPECT_TRUE(mparse::spec::RuleItemLiteral{.value = ""}.empty());
     EXPECT_FALSE(mparse::spec::RuleItemLiteral{.value = "x"}.empty());
+    EXPECT_TRUE((mparse::spec::RuleItemRepeatedLiteral{.value = "", .count_expression = "n"}).empty());
+    EXPECT_FALSE((mparse::spec::RuleItemRepeatedLiteral{.value = "x", .count_expression = "n"}).empty());
 
     EXPECT_TRUE((mparse::spec::RuleItemRange{.from = 'z', .to = 'a'}).empty());
     EXPECT_FALSE((mparse::spec::RuleItemRange{.from = 'a', .to = 'z'}).empty());

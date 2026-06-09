@@ -106,6 +106,47 @@ TEST(Automaton, BuildsEmptyRuleAsReduceTransitionToEnd) {
     EXPECT_EQ(*reduce.action->action(), "$$ = makeS()");
 }
 
+TEST(Automaton, BuildsRepeatedLiteralTransition) {
+    const auto specification = mparse::spec::Specification{
+        .symbols = {
+            mparse::spec::Symbol{
+                .name = "S",
+                .type = "std::string",
+                .arguments = {
+                    mparse::spec::SymbolArgument{
+                        .name = "offset",
+                        .type = "int",
+                    },
+                },
+                .rules = {
+                    mparse::tests::rule(
+                        {mparse::tests::repeatedLiteralItem(" ", "offset")},
+                        "$$ = $1"
+                    ),
+                },
+            },
+        },
+    };
+
+    const auto symbols_storage =
+        mparse::analysis::makeSymbolsStorageFromSpecification(specification);
+    const auto automata = symbols_storage.buildAutomata();
+    const auto& automaton = automata.getAutomatonByName("S");
+
+    ASSERT_EQ(automaton.vertices.size(), 3);
+
+    const auto& repeated_edge = onlyEdge(automaton, automaton.start);
+    const auto& repeated =
+        asTransition<mparse::analysis::RepeatedLiteralTransition>(repeated_edge);
+    EXPECT_EQ(repeated.value, " ");
+    EXPECT_EQ(repeated.count_expression, "offset");
+
+    const auto& reduce_edge = onlyEdge(automaton, repeated_edge.target);
+    const auto& reduce = asTransition<mparse::analysis::ReduceTransition>(reduce_edge);
+    ASSERT_EQ(reduce.argument_types.size(), 1);
+    EXPECT_EQ(reduce.argument_types.front(), "std::string");
+}
+
 TEST(Automaton, BuildsExactSelfRecursiveRuleFromEndToEnd) {
     using namespace mparse::tests;
 

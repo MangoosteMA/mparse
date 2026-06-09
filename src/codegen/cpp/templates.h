@@ -15,6 +15,7 @@ namespace mparse::codegen::cpp {
     std::string_view vertexGeneratorMakeNextTemplate();
     std::string_view literalEdgeGeneratorCaseTemplate();
     std::string_view rangeEdgeGeneratorCaseTemplate();
+    std::string_view repeatedLiteralEdgeGeneratorCaseTemplate();
     std::string_view symbolEdgeGeneratorCaseTemplate();
     std::string_view reduceEdgeGeneratorCaseTemplate();
     std::string_view vertexGeneratorMakeEdgeTemplate();

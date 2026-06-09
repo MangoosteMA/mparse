@@ -74,12 +74,15 @@ new partial generator for the edge target.
 
 ## Transitions
 
-The C++ backend currently handles four transition kinds:
+The C++ backend currently handles five transition kinds:
 
 - `LiteralTransition`: checks that the input at `position_` starts with the
   literal, pushes the matched string, and advances by the literal length.
 - `RangeTransition`: checks one input character against an inclusive range,
   pushes the matched character, and advances by one byte.
+- `RepeatedLiteralTransition`: checks a literal repeated by a raw C++ count
+  expression, pushes the matched string, and advances by the repeated byte
+  length.
 - `SymbolTransition`: creates a nested parse generator for another grammar
   symbol. Every nested result appends its semantic value to the current stack
   and continues at the nested result position.

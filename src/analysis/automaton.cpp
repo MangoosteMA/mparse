@@ -58,6 +58,9 @@ namespace mparse::analysis {
                     [](const spec::RuleItemRange&) {
                         return std::string{"char"};
                     },
+                    [](const spec::RuleItemRepeatedLiteral&) {
+                        return std::string{"std::string"};
+                    },
                     [&](const spec::RuleItemSymbol& item_symbol) {
                         return symbolValueType(
                             symbols_storage.getSymbolByName(item_symbol.name)
@@ -97,6 +100,12 @@ namespace mparse::analysis {
                         return RangeTransition{
                             .from = range.from,
                             .to = range.to,
+                        };
+                    },
+                    [](const spec::RuleItemRepeatedLiteral& literal) -> AutomatonTransition {
+                        return RepeatedLiteralTransition{
+                            .value = literal.value,
+                            .count_expression = literal.count_expression,
                         };
                     },
                     [&](const spec::RuleItemSymbol& item_symbol) -> AutomatonTransition {

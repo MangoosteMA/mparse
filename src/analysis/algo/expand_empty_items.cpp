@@ -109,6 +109,9 @@ namespace mparse::analysis {
                     [](const spec::RuleItemRange& range) {
                         return range.empty();
                     },
+                    [](const spec::RuleItemRepeatedLiteral& literal) {
+                        return literal.empty();
+                    },
                     [&](const spec::RuleItemSymbol& item_symbol) {
                         return expanded_infos[item_symbol.name].canBeEmpty();
                     },

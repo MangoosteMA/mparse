@@ -39,6 +39,7 @@ namespace mparse::spec {
         Rule parseRule();
         RuleItem parseRuleItem();
         RuleItemValue parseLiteralOrRange();
+        std::string parseRepeatCountExpression();
         std::string parseLiteralText();
         char parseEscapedLiteralChar(char value) const;
         RuleItemSymbol parseSymbolReference();

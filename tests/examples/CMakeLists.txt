@@ -26,3 +26,9 @@ add_cpp_example_test(
     examples/cpp/nested_actions.cpp
     "ABc"
 )
+
+add_cpp_example_test(
+    Examples.ParameterizedOutline
+    examples/cpp/parameterized_outline.cpp
+    "project > parser > grammar | parser > grammar"
+)

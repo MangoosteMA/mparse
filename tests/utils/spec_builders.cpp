@@ -21,6 +21,15 @@ namespace mparse::tests {
         };
     }
 
+    spec::RuleItem repeatedLiteralItem(std::string value, std::string count_expression) {
+        return spec::RuleItem{
+            .value = spec::RuleItemRepeatedLiteral{
+                .value = std::move(value),
+                .count_expression = std::move(count_expression),
+            },
+        };
+    }
+
     spec::RuleItem rangeItem(char from, char to) {
         return spec::RuleItem{
             .value = spec::RuleItemRange{

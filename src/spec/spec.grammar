@@ -7,10 +7,10 @@ This file is the canonical grammar for mparse specification files and the
 source template for the bootstrap parser snapshot.
 
 The grammar intentionally covers only the current spec syntax: symbols with
-optional arguments and value type, literal/range/symbol rule items, rule
-actions, and surrounding source template text. Keep semantic helpers in this
-file close to the grammar rules so a new parser snapshot can be regenerated
-from one entry point.
+optional arguments and value type, literal/range/repeated-literal/symbol rule
+items, rule actions, and surrounding source template text. Keep semantic
+helpers in this file close to the grammar rules so a new parser snapshot can be
+regenerated from one entry point.
 
 To update the snapshot, build mparse and run:
 
@@ -34,6 +34,11 @@ Do not edit src/spec/generated/generated_parser.cpp by hand.
 namespace mparse::spec::generated {
 
     struct LiteralData {
+        std::string value;
+        std::string source;
+    };
+
+    struct ExpressionData {
         std::string value;
         std::string source;
     };
@@ -126,6 +131,23 @@ namespace mparse::spec::generated {
         };
     }
 
+    ParsedRuleItem makeRepeatedLiteralItem(
+        const LiteralData& literal,
+        std::string horizontal_whitespace,
+        const ExpressionData& count_expression
+    ) {
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemRepeatedLiteral{
+                    .value = literal.value,
+                    .count_expression = count_expression.value,
+                },
+            },
+            .source = literal.source + horizontal_whitespace + "^" +
+                      count_expression.source,
+        };
+    }
+
     ParsedRuleItem makeRangeItem(
         const LiteralData& from,
         std::string horizontal_whitespace_left,
@@ -149,7 +171,8 @@ namespace mparse::spec::generated {
     }
 
     std::vector<std::string> splitCommaSeparatedExpressions(std::string_view content) {
-        content = mparse::spec::trim(content);
+        const auto trimmed_content = mparse::spec::trim(content);
+        content = trimmed_content;
 
         std::vector<std::string> result;
         size_t begin = 0;
@@ -210,6 +233,20 @@ namespace mparse::spec::generated {
             });
         }
         return arguments;
+    }
+
+    ExpressionData makeExpression(std::string source) {
+        return ExpressionData{
+            .value = source,
+            .source = std::move(source),
+        };
+    }
+
+    ExpressionData makeParenthesizedExpression(std::string content) {
+        return ExpressionData{
+            .value = mparse::spec::trim(content),
+            .source = "(" + content + ")",
+        };
     }
 
     ParsedRuleItem makeSymbolReference(
@@ -526,8 +563,30 @@ LiteralOrRange<mparse_spec_generated::ParsedRuleItem>
     : Literal HorizontalWhitespace '-' HorizontalWhitespace Literal {
         $$ = mparse_spec_generated::makeRangeItem($1, $2, $4, $5)
     }
+    : Literal HorizontalWhitespace '^' RepeatCountExpression {
+        $$ = mparse_spec_generated::makeRepeatedLiteralItem($1, $2, $4)
+    }
     : Literal {
         $$ = mparse_spec_generated::makeLiteralItem($1)
+    }
+
+RepeatCountExpression<mparse_spec_generated::ExpressionData>
+    : Identifier {
+        $$ = mparse_spec_generated::makeExpression($1)
+    }
+    : DecimalNumber {
+        $$ = mparse_spec_generated::makeExpression($1)
+    }
+    : '(' ParenContent ')' {
+        $$ = mparse_spec_generated::makeParenthesizedExpression($2)
+    }
+
+DecimalNumber<std::string>
+    : '0'-'9' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : DecimalNumber '0'-'9' {
+        $$ = $1 + mparse_spec_generated::oneChar($2)
     }
 
 SymbolReference<mparse_spec_generated::ParsedRuleItem>
@@ -701,6 +760,34 @@ AnglePlainChar<std::string>
         $$ = $1
     }
     : '?'-'~' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+
+ParenContent<std::string>
+    : {
+        $$ = ""
+    }
+    : ParenPlainChar ParenContent {
+        $$ = $1 + $2
+    }
+    : Literal ParenContent {
+        $$ = $1.source + $2
+    }
+    : '(' ParenContent ')' ParenContent {
+        $$ = $1 + $2 + $3 + $4
+    }
+
+ParenPlainChar<std::string>
+    : LineBreak {
+        $$ = $1
+    }
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : '!'-'&' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '*'-'~' {
         $$ = mparse_spec_generated::oneChar($1)
     }
 

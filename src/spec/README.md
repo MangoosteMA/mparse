@@ -24,7 +24,7 @@ automata. Those steps belong to `src/analysis`.
 - `Symbol`: grammar symbol name, source location, optional value type, optional
   parameters, and rules.
 - `Rule`: sequence of rule items plus an optional action body.
-- `RuleItem`: one of literal, range, or symbol reference.
+- `RuleItem`: one of literal, range, repeated literal, or symbol reference.
 - `SymbolArgument`: parameter declaration from `Symbol[name Type, ...]`.
 
 Literals carry `std::string` values, ranges carry single `char` boundaries, and
@@ -61,6 +61,9 @@ Supported rule items:
 - `'literal'`: literal text. Escapes currently include `\n`, `\t`, `\\`, and
   `\'`; unknown escapes are kept as the escaped character.
 - `'a'-'z'`: inclusive one-character range.
+- `'literal'^count`: exact literal repetition. `count` is a raw C++ expression;
+  use `^(...)` when the expression contains spaces, for example
+  `' '^(indent + 2)`.
 - `OtherSymbol`: symbol reference without arguments.
 - `OtherSymbol[arg1, call(arg2)]`: symbol reference with raw C++ argument
   expressions.
@@ -69,7 +72,7 @@ Actions are parsed as balanced `{ ... }` blocks. Brackets inside character
 literals are ignored while balancing, so actions and argument lists can contain
 nested calls, templates, and initializer lists.
 
-Grouped expressions and quantifiers are explicitly rejected for now.
+Grouped expressions and non-literal quantifiers are explicitly rejected for now.
 
 ## Manual Parser
 
@@ -82,8 +85,8 @@ Important details:
   literals.
 - `parseCommaSeparatedExpressions` splits only at top-level commas.
 - `parseRule` consumes rule items until newline or action start.
-- `parseLiteralOrRange` decides whether a literal is standalone or the left
-  boundary of a range.
+- `parseLiteralOrRange` decides whether a literal is standalone, repeated, or
+  the left boundary of a range.
 
 This parser is still the production implementation used by `spec.cpp`.
 

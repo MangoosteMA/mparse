@@ -110,6 +110,14 @@ TEST(CodegenCpp, EmitsOnlySinglePublicParseInterface) {
         generated.find("std::optional<int> parse(std::string_view input, int offset)"),
         std::string::npos
     );
+    EXPECT_NE(
+        generated.find("static std::any mparse_action_0(const std::vector<std::any>& args, int offset)"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        generated.find("std::vector<std::any> next_stack{mparse_action_0(stack_, offset)}"),
+        std::string::npos
+    );
     EXPECT_NE(generated.find("class mparse_parse_Root_generator"), std::string::npos);
     EXPECT_NE(generated.find("class mparse_parse_Root_vertex_0_generator"), std::string::npos);
     EXPECT_NE(generated.find("class SequentialPartialGenerator"), std::string::npos);
@@ -180,6 +188,44 @@ TEST(CodegenCpp, EmitsNestedActionTrees) {
     );
     EXPECT_NE(
         generated.find("mparse_generated_detail::semanticValue<std::string>(resolved_args, 2)"),
+        std::string::npos
+    );
+}
+
+TEST(CodegenCpp, EmitsRepeatedLiteralTransitions) {
+    const auto specification = mparse::spec::Specification{
+        .symbols = {
+            mparse::spec::Symbol{
+                .name = "Root",
+                .type = "std::string",
+                .arguments = {
+                    mparse::spec::SymbolArgument{
+                        .name = "offset",
+                        .type = "int",
+                    },
+                },
+                .rules = {
+                    mparse::tests::rule(
+                        {mparse::tests::repeatedLiteralItem(" ", "offset")},
+                        "$$ = $1"
+                    ),
+                },
+            },
+        },
+    };
+
+    const auto generated = generateCpp(specification);
+
+    EXPECT_NE(
+        generated.find("const auto repeat_count = (offset);"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        generated.find("std::cmp_less(repeat_count, 0)"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        generated.find("position_ + repeated_size"),
         std::string::npos
     );
 }

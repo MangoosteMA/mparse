@@ -22,13 +22,24 @@ namespace mparse::spec {
         bool empty() const;
     };
 
+    struct RuleItemRepeatedLiteral {
+        std::string value;
+        std::string count_expression;
+
+        bool empty() const;
+    };
+
     struct RuleItemSymbol {
         std::string name;
         std::vector<std::string> arguments;
     };
 
     // TODO: support regex
-    using RuleItemValue = std::variant<RuleItemLiteral, RuleItemRange, RuleItemSymbol>;
+    using RuleItemValue = std::variant<
+        RuleItemLiteral,
+        RuleItemRange,
+        RuleItemRepeatedLiteral,
+        RuleItemSymbol>;
 
     struct RuleItem {
         RuleItemValue value;
