@@ -28,6 +28,12 @@ Run the full test suite:
 ctest --test-dir build --output-on-failure
 ```
 
+## Architecture Notes
+
+- [Specification reader](src/spec/README.md)
+- [Grammar analysis](src/analysis/README.md)
+- [Code generation](src/codegen/README.md)
+
 ## Examples
 
 The `examples/cpp/hex_color.cpp` file is a small self-contained C++ grammar
