@@ -30,8 +30,40 @@ namespace mparse::codegen::cpp {
             std::vector<const analysis::ActionTreeNode*> action_nodes;
         };
 
-        std::string symbolValueType(const analysis::SymbolPtr& symbol) {
+        std::string symbolCppValueType(const analysis::SymbolPtr& symbol) {
             return VERIFY(symbol)->type().value_or("std::monostate");
+        }
+
+        std::string semanticValueCppType(
+            const analysis::SemanticValueType& semantic_value_type
+        ) {
+            return std::visit(
+                mparse::Overloaded{
+                    [](const analysis::TextSemanticValue&) {
+                        return std::string{"std::string"};
+                    },
+                    [](const analysis::CharacterSemanticValue&) {
+                        return std::string{"char"};
+                    },
+                    [](const analysis::SymbolSemanticValue& value_type) {
+                        return symbolCppValueType(value_type.symbol);
+                    },
+                },
+                semantic_value_type
+            );
+        }
+
+        std::vector<std::string> semanticValueCppTypes(
+            const std::vector<analysis::SemanticValueType>& semantic_value_types
+        ) {
+            std::vector<std::string> result;
+            result.reserve(semantic_value_types.size());
+
+            for (const auto& semantic_value_type : semantic_value_types) {
+                result.push_back(semanticValueCppType(semantic_value_type));
+            }
+
+            return result;
         }
 
         std::string parametersDeclaration(const analysis::SymbolPtr& symbol) {
@@ -126,7 +158,7 @@ namespace mparse::codegen::cpp {
             const analysis::GrammarAutomata& automata
         ) {
             if (edge.expanded_symbol_name) {
-                return symbolValueType(
+                return symbolCppValueType(
                     automata.getAutomatonByName(*edge.expanded_symbol_name).symbol
                 );
             }
@@ -200,8 +232,8 @@ namespace mparse::codegen::cpp {
                         action_data.reduce_action_ids.emplace(reduce, action_id);
                         registerActionSignature(
                             reduce->action,
-                            reduce->result_type,
-                            reduce->argument_types,
+                            semanticValueCppType(reduce->result_type),
+                            semanticValueCppTypes(reduce->argument_types),
                             automaton.symbol,
                             automata,
                             action_data
@@ -251,6 +283,292 @@ namespace mparse::codegen::cpp {
             return result;
         }
 
+        enum class RegexFormatPrecedence {
+            Alternative,
+            Sequence,
+            Repeat,
+            Atom,
+        };
+
+        std::string maybeParenthesizeRegex(
+            std::string expression,
+            RegexFormatPrecedence expression_precedence,
+            RegexFormatPrecedence parent_precedence
+        ) {
+            if (expression_precedence < parent_precedence) {
+                return "(" + expression + ")";
+            }
+            return expression;
+        }
+
+        std::string formatRegexExpression(
+            const spec::RegexExpression& expression,
+            RegexFormatPrecedence parent_precedence = RegexFormatPrecedence::Alternative
+        );
+
+        std::string formatRegexExpressionPtr(
+            const spec::RegexExpressionPtr& expression,
+            RegexFormatPrecedence parent_precedence
+        ) {
+            return formatRegexExpression(*VERIFY(expression), parent_precedence);
+        }
+
+        std::string formatRegexExpression(
+            const spec::RegexExpression& expression,
+            RegexFormatPrecedence parent_precedence
+        ) {
+            return std::visit(
+                mparse::Overloaded{
+                    [&](const spec::RegexLiteral& literal) {
+                        return "'" + escapeGrammarLiteral(literal.value) + "'";
+                    },
+                    [&](const spec::RegexRange& range) {
+                        return "'" + escapeGrammarLiteral(std::string{range.from}) +
+                               "'-'" + escapeGrammarLiteral(std::string{range.to}) + "'";
+                    },
+                    [&](const spec::RegexSequence& sequence) {
+                        std::vector<std::string> items;
+                        items.reserve(sequence.items.size());
+                        for (const auto& item : sequence.items) {
+                            items.push_back(formatRegexExpressionPtr(
+                                item,
+                                RegexFormatPrecedence::Sequence
+                            ));
+                        }
+                        return maybeParenthesizeRegex(
+                            join(items, ""),
+                            RegexFormatPrecedence::Sequence,
+                            parent_precedence
+                        );
+                    },
+                    [&](const spec::RegexAlternative& alternative) {
+                        std::vector<std::string> alternatives;
+                        alternatives.reserve(alternative.alternatives.size());
+                        for (const auto& item : alternative.alternatives) {
+                            alternatives.push_back(formatRegexExpressionPtr(
+                                item,
+                                RegexFormatPrecedence::Alternative
+                            ));
+                        }
+                        return maybeParenthesizeRegex(
+                            join(alternatives, " | "),
+                            RegexFormatPrecedence::Alternative,
+                            parent_precedence
+                        );
+                    },
+                    [&](const spec::RegexRepeat& repeat) {
+                        const auto suffix =
+                            repeat.kind == spec::RegexRepeatKind::ZeroOrMore ? "*" : "+";
+                        return maybeParenthesizeRegex(
+                            formatRegexExpressionPtr(
+                                repeat.item,
+                                RegexFormatPrecedence::Repeat
+                            ) + suffix,
+                            RegexFormatPrecedence::Repeat,
+                            parent_precedence
+                        );
+                    },
+                },
+                expression.value
+            );
+        }
+
+        struct RegexMatcherCode {
+            std::string functions;
+            std::string root_matcher;
+        };
+
+        class RegexMatcherEmitter {
+        public:
+            RegexMatcherCode emit(const spec::RegexExpression& expression) {
+                const auto root_matcher = emitExpression(expression);
+
+                Writer writer;
+                for (const auto& function : functions_) {
+                    writer.write(function);
+                }
+
+                return RegexMatcherCode{
+                    .functions = writer.str(),
+                    .root_matcher = root_matcher,
+                };
+            }
+
+        private:
+            std::string emitExpressionPtr(const spec::RegexExpressionPtr& expression) {
+                return emitExpression(*VERIFY(expression));
+            }
+
+            std::string emitExpression(const spec::RegexExpression& expression) {
+                if (const auto iterator = matcher_names_.find(&expression);
+                    iterator != matcher_names_.end()) {
+                    return iterator->second;
+                }
+
+                const auto name = "regex_match_" + std::to_string(next_matcher_id_++);
+                matcher_names_.emplace(&expression, name);
+
+                functions_.push_back(std::visit(
+                    mparse::Overloaded{
+                        [&](const spec::RegexLiteral& literal) {
+                            return emitLiteralMatcher(name, literal);
+                        },
+                        [&](const spec::RegexRange& range) {
+                            return emitRangeMatcher(name, range);
+                        },
+                        [&](const spec::RegexSequence& sequence) {
+                            return emitSequenceMatcher(name, sequence);
+                        },
+                        [&](const spec::RegexAlternative& alternative) {
+                            return emitAlternativeMatcher(name, alternative);
+                        },
+                        [&](const spec::RegexRepeat& repeat) {
+                            return emitRepeatMatcher(name, repeat);
+                        },
+                    },
+                    expression.value
+                ));
+
+                return name;
+            }
+
+            std::string emitLiteralMatcher(
+                const std::string& name,
+                const spec::RegexLiteral& literal
+            ) {
+                Writer writer;
+                writer.line("            auto " + name + " = [&](auto&& self, size_t position) -> std::vector<size_t> {");
+                writer.line("                static_cast<void>(self);");
+                writer.line("                const std::string_view literal = \"" + escapeStringLiteral(literal.value) + "\";");
+                writer.line("                if (position > input_.size() || input_.substr(position, literal.size()) != literal) {");
+                writer.line("                    return {};");
+                writer.line("                }");
+                writer.line("                return {position + literal.size()};");
+                writer.line("            };");
+                return writer.str();
+            }
+
+            std::string emitRangeMatcher(
+                const std::string& name,
+                const spec::RegexRange& range
+            ) {
+                Writer writer;
+                writer.line("            auto " + name + " = [&](auto&& self, size_t position) -> std::vector<size_t> {");
+                writer.line("                static_cast<void>(self);");
+                writer.line(
+                    "                if (!(position < input_.size() && input_[position] >= '" +
+                    escapeCharLiteral(range.from) + "' && input_[position] <= '" +
+                    escapeCharLiteral(range.to) + "')) {"
+                );
+                writer.line("                    return {};");
+                writer.line("                }");
+                writer.line("                return {position + 1};");
+                writer.line("            };");
+                return writer.str();
+            }
+
+            std::string emitSequenceMatcher(
+                const std::string& name,
+                const spec::RegexSequence& sequence
+            ) {
+                std::vector<std::string> item_matchers;
+                item_matchers.reserve(sequence.items.size());
+                for (const auto& item : sequence.items) {
+                    item_matchers.push_back(emitExpressionPtr(item));
+                }
+
+                Writer writer;
+                writer.line("            auto " + name + " = [&](auto&& self, size_t position) -> std::vector<size_t> {");
+                writer.line("                static_cast<void>(self);");
+                writer.line("                std::vector<size_t> current_positions{position};");
+                for (const auto& item_matcher : item_matchers) {
+                    writer.line("                {");
+                    writer.line("                    std::vector<size_t> next_positions;");
+                    writer.line("                    for (const auto current_position : current_positions) {");
+                    writer.line(
+                        "                        for (const auto matched_position : " +
+                        item_matcher + "(" + item_matcher + ", current_position)) {"
+                    );
+                    writer.line("                            mparse_generated_detail::pushUnique(next_positions, matched_position);");
+                    writer.line("                        }");
+                    writer.line("                    }");
+                    writer.line("                    current_positions = std::move(next_positions);");
+                    writer.line("                    if (current_positions.empty()) {");
+                    writer.line("                        return {};");
+                    writer.line("                    }");
+                    writer.line("                }");
+                }
+                writer.line("                return current_positions;");
+                writer.line("            };");
+                return writer.str();
+            }
+
+            std::string emitAlternativeMatcher(
+                const std::string& name,
+                const spec::RegexAlternative& alternative
+            ) {
+                std::vector<std::string> alternative_matchers;
+                alternative_matchers.reserve(alternative.alternatives.size());
+                for (const auto& item : alternative.alternatives) {
+                    alternative_matchers.push_back(emitExpressionPtr(item));
+                }
+
+                Writer writer;
+                writer.line("            auto " + name + " = [&](auto&& self, size_t position) -> std::vector<size_t> {");
+                writer.line("                static_cast<void>(self);");
+                writer.line("                std::vector<size_t> result;");
+                for (const auto& alternative_matcher : alternative_matchers) {
+                    writer.line(
+                        "                for (const auto matched_position : " +
+                        alternative_matcher + "(" + alternative_matcher + ", position)) {"
+                    );
+                    writer.line("                    mparse_generated_detail::pushUnique(result, matched_position);");
+                    writer.line("                }");
+                }
+                writer.line("                return result;");
+                writer.line("            };");
+                return writer.str();
+            }
+
+            std::string emitRepeatMatcher(
+                const std::string& name,
+                const spec::RegexRepeat& repeat
+            ) {
+                const auto item_matcher = emitExpressionPtr(repeat.item);
+
+                Writer writer;
+                writer.line("            auto " + name + " = [&](auto&& self, size_t position) -> std::vector<size_t> {");
+                writer.line("                std::vector<size_t> result;");
+                if (repeat.kind == spec::RegexRepeatKind::ZeroOrMore) {
+                    writer.line("                mparse_generated_detail::pushUnique(result, position);");
+                }
+                writer.line(
+                    "                for (const auto matched_position : " +
+                    item_matcher + "(" + item_matcher + ", position)) {"
+                );
+                writer.line("                    mparse_generated_detail::pushUnique(result, matched_position);");
+                writer.line("                    if (matched_position == position) {");
+                writer.line("                        continue;");
+                writer.line("                    }");
+                writer.line("                    for (const auto repeated_position : self(self, matched_position)) {");
+                writer.line("                        mparse_generated_detail::pushUnique(result, repeated_position);");
+                writer.line("                    }");
+                writer.line("                }");
+                writer.line("                return result;");
+                writer.line("            };");
+                return writer.str();
+            }
+
+            std::unordered_map<const spec::RegexExpression*, std::string> matcher_names_;
+            std::vector<std::string> functions_;
+            size_t next_matcher_id_ = 0;
+        };
+
+        RegexMatcherCode emitRegexMatcherCode(const spec::RegexExpression& expression) {
+            RegexMatcherEmitter emitter;
+            return emitter.emit(expression);
+        }
+
         std::string formatGrammarItem(const spec::RuleItem& item) {
             return std::visit(
                 mparse::Overloaded{
@@ -264,6 +582,9 @@ namespace mparse::codegen::cpp {
                     [](const spec::RuleItemRepeatedLiteral& literal) {
                         return "'" + escapeGrammarLiteral(literal.value) + "'^" +
                                literal.count_expression;
+                    },
+                    [](const spec::RuleItemRegex& regex) {
+                        return formatRegexExpression(regex.expression);
                     },
                     [](const spec::RuleItemSymbol& symbol) {
                         auto result = symbol.name;
@@ -392,7 +713,7 @@ namespace mparse::codegen::cpp {
             Writer& writer,
             const analysis::SymbolAutomaton& automaton
         ) {
-            const auto value_type = symbolValueType(automaton.symbol);
+            const auto value_type = symbolCppValueType(automaton.symbol);
             const auto generator_name = parseGeneratorName(automaton.symbol);
 
             writer.write(renderTemplate(
@@ -427,7 +748,7 @@ namespace mparse::codegen::cpp {
             const analysis::SymbolAutomaton& automaton
         ) {
             const auto generator_name = parseGeneratorName(automaton.symbol);
-            const auto value_type = symbolValueType(automaton.symbol);
+            const auto value_type = symbolCppValueType(automaton.symbol);
 
             writer.write(renderTemplate(
                 parseGeneratorDefinitionTemplate(),
@@ -530,6 +851,25 @@ namespace mparse::codegen::cpp {
             ));
         }
 
+        void emitRegexEdgeGeneratorCase(
+            Writer& writer,
+            const analysis::SymbolAutomaton& automaton,
+            const analysis::AutomatonEdge& edge,
+            size_t edge_index,
+            const analysis::RegexTransition& regex
+        ) {
+            const auto matcher_code = emitRegexMatcherCode(regex.expression);
+            writer.write(renderTemplate(
+                regexEdgeGeneratorCaseTemplate(),
+                nlohmann::json{
+                    {"edge_index", edge_index},
+                    {"matcher_functions", matcher_code.functions},
+                    {"root_matcher", matcher_code.root_matcher},
+                    {"next_generator", makeVertexGenerator(automaton.symbol, edge.target, "input", "match_position", "std::move(next_stack)")},
+                }
+            ));
+        }
+
         void emitSymbolEdgeGeneratorCase(
             Writer& writer,
             const analysis::SymbolAutomaton& automaton,
@@ -595,6 +935,9 @@ namespace mparse::codegen::cpp {
                     },
                     [&](const analysis::RepeatedLiteralTransition& literal) {
                         emitRepeatedLiteralEdgeGeneratorCase(writer, automaton, edge, edge_index, literal);
+                    },
+                    [&](const analysis::RegexTransition& regex) {
+                        emitRegexEdgeGeneratorCase(writer, automaton, edge, edge_index, regex);
                     },
                     [&](const analysis::SymbolTransition& symbol) {
                         emitSymbolEdgeGeneratorCase(writer, automaton, edge, edge_index, symbol);
@@ -688,7 +1031,7 @@ namespace mparse::codegen::cpp {
             writer.write(renderTemplate(
                 rootParseFunctionTemplate(),
                 nlohmann::json{
-                    {"value_type", symbolValueType(root_symbol)},
+                    {"value_type", symbolCppValueType(root_symbol)},
                     {"parameters_declaration", parametersDeclaration(root_symbol)},
                     {"generator_name", parseGeneratorName(root_symbol)},
                     {"parameters_forwarding", parametersForwarding(root_symbol)},

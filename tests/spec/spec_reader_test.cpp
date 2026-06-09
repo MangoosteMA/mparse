@@ -4,8 +4,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -18,6 +21,14 @@ namespace {
         std::ostringstream content;
         content << file.rdbuf();
         return content.str();
+    }
+
+    mparse::spec::RegexExpressionPtr regexExpression(
+        mparse::spec::RegexExpressionValue value
+    ) {
+        return std::make_shared<mparse::spec::RegexExpression>(
+            mparse::spec::RegexExpression{.value = std::move(value)}
+        );
     }
 
 } // namespace
@@ -107,6 +118,43 @@ TEST(SpecReader, DetectsEmptyLiteralAndRangeItems) {
     EXPECT_TRUE((mparse::spec::RuleItemRange{.from = 'z', .to = 'a'}).empty());
     EXPECT_FALSE((mparse::spec::RuleItemRange{.from = 'a', .to = 'z'}).empty());
     EXPECT_FALSE((mparse::spec::RuleItemRange{.from = 'a', .to = 'a'}).empty());
+}
+
+TEST(SpecReader, DetectsEmptyRegexAstItems) {
+    const auto empty_literal =
+        regexExpression(mparse::spec::RegexLiteral{.value = ""});
+    const auto literal =
+        regexExpression(mparse::spec::RegexLiteral{.value = "x"});
+
+    EXPECT_TRUE(empty_literal->empty());
+    EXPECT_FALSE(literal->empty());
+
+    EXPECT_TRUE((mparse::spec::RegexRepeat{
+        .item = literal,
+        .kind = mparse::spec::RegexRepeatKind::ZeroOrMore,
+    }).empty());
+    EXPECT_FALSE((mparse::spec::RegexRepeat{
+        .item = literal,
+        .kind = mparse::spec::RegexRepeatKind::OneOrMore,
+    }).empty());
+    EXPECT_TRUE((mparse::spec::RegexRepeat{
+        .item = empty_literal,
+        .kind = mparse::spec::RegexRepeatKind::OneOrMore,
+    }).empty());
+
+    EXPECT_FALSE((mparse::spec::RegexSequence{
+        .items = {empty_literal, literal},
+    }).empty());
+    EXPECT_TRUE((mparse::spec::RegexAlternative{
+        .alternatives = {literal, empty_literal},
+    }).empty());
+    EXPECT_TRUE((mparse::spec::RuleItemRegex{
+        .expression = mparse::spec::RegexExpression{
+            .value = mparse::spec::RegexAlternative{
+                .alternatives = {literal, empty_literal},
+            },
+        },
+    }).empty());
 }
 
 TEST(SpecReader, ParsesEscapedLiteralCharacters) {

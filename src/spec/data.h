@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -34,12 +35,72 @@ namespace mparse::spec {
         std::vector<std::string> arguments;
     };
 
-    // TODO: support regex
+    struct RegexExpression;
+
+    using RegexExpressionPtr = std::shared_ptr<RegexExpression>;
+
+    struct RegexLiteral {
+        std::string value;
+
+        bool empty() const;
+    };
+
+    struct RegexRange {
+        char from;
+        char to;
+
+        bool empty() const;
+    };
+
+    struct RegexSequence {
+        std::vector<RegexExpressionPtr> items;
+
+        bool empty() const;
+    };
+
+    struct RegexAlternative {
+        std::vector<RegexExpressionPtr> alternatives;
+
+        bool empty() const;
+    };
+
+    enum class RegexRepeatKind {
+        ZeroOrMore,
+        OneOrMore,
+    };
+
+    struct RegexRepeat {
+        RegexExpressionPtr item;
+        RegexRepeatKind kind = RegexRepeatKind::ZeroOrMore;
+
+        bool empty() const;
+    };
+
+    using RegexExpressionValue = std::variant<
+        RegexLiteral,
+        RegexRange,
+        RegexSequence,
+        RegexAlternative,
+        RegexRepeat>;
+
+    struct RegexExpression {
+        RegexExpressionValue value;
+
+        bool empty() const;
+    };
+
+    struct RuleItemRegex {
+        RegexExpression expression;
+
+        bool empty() const;
+    };
+
     using RuleItemValue = std::variant<
         RuleItemLiteral,
         RuleItemRange,
         RuleItemRepeatedLiteral,
-        RuleItemSymbol>;
+        RuleItemSymbol,
+        RuleItemRegex>;
 
     struct RuleItem {
         RuleItemValue value;

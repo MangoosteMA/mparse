@@ -56,6 +56,9 @@ namespace mparse::analysis {
                     [](const spec::RuleItemRepeatedLiteral& literal) {
                         return literal.empty();
                     },
+                    [](const spec::RuleItemRegex& regex) {
+                        return regex.empty();
+                    },
                     [&](const spec::RuleItemSymbol& item_symbol) {
                         return can_symbol_be_empty[item_symbol.name];
                     },

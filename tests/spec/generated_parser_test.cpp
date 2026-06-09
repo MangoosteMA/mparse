@@ -37,6 +37,86 @@ namespace {
         }
     }
 
+    void expectRegexExpressionsEqual(
+        const mparse::spec::RegexExpression& actual,
+        const mparse::spec::RegexExpression& expected
+    );
+
+    void expectRegexExpressionPtrsEqual(
+        const mparse::spec::RegexExpressionPtr& actual,
+        const mparse::spec::RegexExpressionPtr& expected
+    ) {
+        ASSERT_EQ(static_cast<bool>(actual), static_cast<bool>(expected));
+        if (!actual) {
+            return;
+        }
+        expectRegexExpressionsEqual(*actual, *expected);
+    }
+
+    void expectRegexExpressionPtrsEqual(
+        const std::vector<mparse::spec::RegexExpressionPtr>& actual,
+        const std::vector<mparse::spec::RegexExpressionPtr>& expected
+    ) {
+        ASSERT_EQ(actual.size(), expected.size());
+        for (size_t index = 0; index < actual.size(); index++) {
+            SCOPED_TRACE("regex expression " + std::to_string(index));
+            expectRegexExpressionPtrsEqual(actual[index], expected[index]);
+        }
+    }
+
+    void expectRegexExpressionsEqual(
+        const mparse::spec::RegexExpression& actual,
+        const mparse::spec::RegexExpression& expected
+    ) {
+        ASSERT_EQ(actual.value.index(), expected.value.index());
+
+        if (const auto* actual_literal =
+                std::get_if<mparse::spec::RegexLiteral>(&actual.value)) {
+            const auto& expected_literal =
+                std::get<mparse::spec::RegexLiteral>(expected.value);
+            EXPECT_EQ(actual_literal->value, expected_literal.value);
+            return;
+        }
+
+        if (const auto* actual_range =
+                std::get_if<mparse::spec::RegexRange>(&actual.value)) {
+            const auto& expected_range =
+                std::get<mparse::spec::RegexRange>(expected.value);
+            EXPECT_EQ(actual_range->from, expected_range.from);
+            EXPECT_EQ(actual_range->to, expected_range.to);
+            return;
+        }
+
+        if (const auto* actual_sequence =
+                std::get_if<mparse::spec::RegexSequence>(&actual.value)) {
+            const auto& expected_sequence =
+                std::get<mparse::spec::RegexSequence>(expected.value);
+            expectRegexExpressionPtrsEqual(
+                actual_sequence->items,
+                expected_sequence.items
+            );
+            return;
+        }
+
+        if (const auto* actual_alternative =
+                std::get_if<mparse::spec::RegexAlternative>(&actual.value)) {
+            const auto& expected_alternative =
+                std::get<mparse::spec::RegexAlternative>(expected.value);
+            expectRegexExpressionPtrsEqual(
+                actual_alternative->alternatives,
+                expected_alternative.alternatives
+            );
+            return;
+        }
+
+        const auto& actual_repeat =
+            std::get<mparse::spec::RegexRepeat>(actual.value);
+        const auto& expected_repeat =
+            std::get<mparse::spec::RegexRepeat>(expected.value);
+        EXPECT_EQ(actual_repeat.kind, expected_repeat.kind);
+        expectRegexExpressionPtrsEqual(actual_repeat.item, expected_repeat.item);
+    }
+
     void expectRuleItemValuesEqual(
         const mparse::spec::RuleItemValue& actual,
         const mparse::spec::RuleItemValue& expected
@@ -67,6 +147,17 @@ namespace {
             EXPECT_EQ(
                 actual_repeated->count_expression,
                 expected_repeated.count_expression
+            );
+            return;
+        }
+
+        if (const auto* actual_regex =
+                std::get_if<mparse::spec::RuleItemRegex>(&actual)) {
+            const auto& expected_regex =
+                std::get<mparse::spec::RuleItemRegex>(expected);
+            expectRegexExpressionsEqual(
+                actual_regex->expression,
+                expected_regex.expression
             );
             return;
         }

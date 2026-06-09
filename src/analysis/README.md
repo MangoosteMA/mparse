@@ -133,15 +133,23 @@ Every automaton has:
 
 Transition types:
 
-- `LiteralTransition`: consumes a string literal and produces `std::string`.
+- `LiteralTransition`: consumes a string literal and produces a text semantic
+  value.
 - `RangeTransition`: consumes one character in an inclusive range and produces
-  `char`.
+  a character semantic value.
 - `RepeatedLiteralTransition`: consumes a literal repeated by a raw C++ count
-  expression and produces the matched `std::string`.
+  expression and produces a text semantic value.
+- `RegexTransition`: consumes text matched by a regex AST and produces a text
+  semantic value.
 - `SymbolTransition`: runs another symbol parser and produces that symbol's
-  value type.
+  semantic value.
 - `ReduceTransition`: runs an action tree and produces the current symbol's
-  value type.
+  semantic value.
+
+The analysis model intentionally keeps these semantic value kinds independent
+from any target language. For example, the C++ backend maps text values to
+`std::string`, character values to `char`, and missing symbol value types to
+`std::monostate`.
 
 Self-starting rules are special-cased: if a rule starts with an exact reference
 to its own symbol, the path begins at the automaton end vertex and skips that

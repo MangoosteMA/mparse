@@ -14,6 +14,55 @@ namespace mparse::spec {
         return value.empty();
     }
 
+    bool RegexLiteral::empty() const {
+        return value.empty();
+    }
+
+    bool RegexRange::empty() const {
+        return from > to;
+    }
+
+    bool RegexSequence::empty() const {
+        for (const auto& item : items) {
+            if (!item || !item->empty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool RegexAlternative::empty() const {
+        for (const auto& alternative : alternatives) {
+            if (alternative && alternative->empty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool RegexRepeat::empty() const {
+        switch (kind) {
+            case RegexRepeatKind::ZeroOrMore:
+                return true;
+            case RegexRepeatKind::OneOrMore:
+                return item && item->empty();
+        }
+        return false;
+    }
+
+    bool RegexExpression::empty() const {
+        return std::visit(
+            [](const auto& expression) {
+                return expression.empty();
+            },
+            value
+        );
+    }
+
+    bool RuleItemRegex::empty() const {
+        return expression.empty();
+    }
+
     std::string SourceTemplate::insert(std::string_view content) const {
         std::string result;
         result.reserve(before_insertion.size() + content.size() + after_insertion.size());

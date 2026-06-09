@@ -6,8 +6,10 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -33,6 +35,14 @@ namespace {
         EXPECT_EQ(
             mparse::tests::readOrUpdateCanon(relative_path, actual),
             mparse::tests::canonicalizeText(actual)
+        );
+    }
+
+    mparse::spec::RegexExpressionPtr regexExpression(
+        mparse::spec::RegexExpressionValue value
+    ) {
+        return std::make_shared<mparse::spec::RegexExpression>(
+            mparse::spec::RegexExpression{.value = std::move(value)}
         );
     }
 
@@ -226,6 +236,63 @@ TEST(CodegenCpp, EmitsRepeatedLiteralTransitions) {
     );
     EXPECT_NE(
         generated.find("position_ + repeated_size"),
+        std::string::npos
+    );
+}
+
+TEST(CodegenCpp, EmitsRegexTransitions) {
+    const auto identifier_regex = mparse::spec::RegexExpression{
+        .value = mparse::spec::RegexSequence{
+            .items = {
+                regexExpression(mparse::spec::RegexRange{.from = 'a', .to = 'z'}),
+                regexExpression(mparse::spec::RegexRepeat{
+                    .item = regexExpression(mparse::spec::RegexAlternative{
+                        .alternatives = {
+                            regexExpression(mparse::spec::RegexRange{.from = 'a', .to = 'z'}),
+                            regexExpression(mparse::spec::RegexRange{.from = '0', .to = '9'}),
+                        },
+                    }),
+                    .kind = mparse::spec::RegexRepeatKind::ZeroOrMore,
+                }),
+            },
+        },
+    };
+
+    const auto specification = mparse::spec::Specification{
+        .symbols = {
+            mparse::spec::Symbol{
+                .name = "Identifier",
+                .type = "std::string",
+                .rules = {
+                    mparse::tests::rule(
+                        {
+                            mparse::spec::RuleItem{
+                                .value = mparse::spec::RuleItemRegex{
+                                    .expression = identifier_regex,
+                                },
+                            },
+                        },
+                        "$$ = $1"
+                    ),
+                },
+            },
+        },
+    };
+
+    const auto generated = generateCpp(specification);
+
+    EXPECT_NE(generated.find("class RegexEdgeGenerator"), std::string::npos);
+    EXPECT_NE(generated.find("auto regex_match_"), std::string::npos);
+    EXPECT_NE(
+        generated.find("mparse_generated_detail::pushUnique(result, position);"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        generated.find("next_stack.push_back(std::string{input.substr(position, match_position - position)})"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        generated.find("mparse_generated_detail::semanticValue<std::string>(args, 0)"),
         std::string::npos
     );
 }

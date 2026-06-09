@@ -41,25 +41,30 @@ namespace mparse::analysis {
             });
         }
 
-        std::string symbolValueType(const SymbolPtr& symbol) {
+        SemanticValueType symbolValueType(const SymbolPtr& symbol) {
             VERIFY(symbol);
-            return symbol->type().value_or("std::monostate");
+            return SymbolSemanticValue{
+                .symbol = symbol,
+            };
         }
 
-        std::string itemValueType(
+        SemanticValueType itemValueType(
             const spec::RuleItem& item,
             const SymbolsStorage& symbols_storage
         ) {
             return std::visit(
                 mparse::Overloaded{
                     [](const spec::RuleItemLiteral&) {
-                        return std::string{"std::string"};
+                        return SemanticValueType{TextSemanticValue{}};
                     },
                     [](const spec::RuleItemRange&) {
-                        return std::string{"char"};
+                        return SemanticValueType{CharacterSemanticValue{}};
                     },
                     [](const spec::RuleItemRepeatedLiteral&) {
-                        return std::string{"std::string"};
+                        return SemanticValueType{TextSemanticValue{}};
+                    },
+                    [](const spec::RuleItemRegex&) {
+                        return SemanticValueType{TextSemanticValue{}};
                     },
                     [&](const spec::RuleItemSymbol& item_symbol) {
                         return symbolValueType(
@@ -71,11 +76,11 @@ namespace mparse::analysis {
             );
         }
 
-        std::vector<std::string> ruleArgumentTypes(
+        std::vector<SemanticValueType> ruleArgumentTypes(
             const Rule& rule,
             const SymbolsStorage& symbols_storage
         ) {
-            std::vector<std::string> types;
+            std::vector<SemanticValueType> types;
             types.reserve(rule.items().size());
 
             for (const auto& item : rule.items()) {
@@ -106,6 +111,11 @@ namespace mparse::analysis {
                         return RepeatedLiteralTransition{
                             .value = literal.value,
                             .count_expression = literal.count_expression,
+                        };
+                    },
+                    [](const spec::RuleItemRegex& regex) -> AutomatonTransition {
+                        return RegexTransition{
+                            .expression = regex.expression,
                         };
                     },
                     [&](const spec::RuleItemSymbol& item_symbol) -> AutomatonTransition {

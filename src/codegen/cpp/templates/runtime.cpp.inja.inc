@@ -72,6 +72,15 @@ namespace mparse_generated_detail {
     const Value& semanticValue(const std::vector<std::any>& args, size_t index) {
         return std::any_cast<const Value&>(args.at(index));
     }
+
+    inline void pushUnique(std::vector<size_t>& values, size_t value) {
+        for (const auto current : values) {
+            if (current == value) {
+                return;
+            }
+        }
+        values.push_back(value);
+    }
 } // namespace mparse_generated_detail
 
 )mparse_template"

@@ -54,6 +54,9 @@ namespace mparse::analysis {
                             [&](const spec::RuleItemRepeatedLiteral& literal) {
                                 rule_info.might_be_empty &= literal.empty();
                             },
+                            [&](const spec::RuleItemRegex& regex) {
+                                rule_info.might_be_empty &= regex.empty();
+                            },
                             [&](const spec::RuleItemSymbol& item_symbol) {
                                 const auto& current_symbol = symbols_storage.getSymbolByName(item_symbol.name);
                                 if (current_symbol == symbol) {

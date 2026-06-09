@@ -29,21 +29,45 @@ namespace mparse::analysis {
         std::string count_expression;
     };
 
+    struct RegexTransition {
+        spec::RegexExpression expression;
+    };
+
     struct SymbolTransition {
         SymbolPtr symbol;
         std::vector<std::string> arguments;
     };
 
+    struct TextSemanticValue {
+        bool operator==(const TextSemanticValue&) const = default;
+    };
+
+    struct CharacterSemanticValue {
+        bool operator==(const CharacterSemanticValue&) const = default;
+    };
+
+    struct SymbolSemanticValue {
+        SymbolPtr symbol;
+
+        bool operator==(const SymbolSemanticValue&) const = default;
+    };
+
+    using SemanticValueType = std::variant<
+        TextSemanticValue,
+        CharacterSemanticValue,
+        SymbolSemanticValue>;
+
     struct ReduceTransition {
         ActionTreeNodePtr action;
-        std::string result_type;
-        std::vector<std::string> argument_types;
+        SemanticValueType result_type;
+        std::vector<SemanticValueType> argument_types;
     };
 
     using AutomatonTransition = std::variant<
         LiteralTransition,
         RangeTransition,
         RepeatedLiteralTransition,
+        RegexTransition,
         SymbolTransition,
         ReduceTransition>;
 

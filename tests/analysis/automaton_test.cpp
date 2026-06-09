@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
@@ -36,6 +37,14 @@ namespace {
                 .arguments = std::move(arguments),
             },
         };
+    }
+
+    mparse::spec::RegexExpressionPtr regexExpression(
+        mparse::spec::RegexExpressionValue value
+    ) {
+        return std::make_shared<mparse::spec::RegexExpression>(
+            mparse::spec::RegexExpression{.value = std::move(value)}
+        );
     }
 
 } // namespace
@@ -144,7 +153,70 @@ TEST(Automaton, BuildsRepeatedLiteralTransition) {
     const auto& reduce_edge = onlyEdge(automaton, repeated_edge.target);
     const auto& reduce = asTransition<mparse::analysis::ReduceTransition>(reduce_edge);
     ASSERT_EQ(reduce.argument_types.size(), 1);
-    EXPECT_EQ(reduce.argument_types.front(), "std::string");
+    EXPECT_TRUE(std::holds_alternative<mparse::analysis::TextSemanticValue>(
+        reduce.argument_types.front()
+    ));
+}
+
+TEST(Automaton, BuildsRegexTransition) {
+    const auto regex = mparse::spec::RegexExpression{
+        .value = mparse::spec::RegexSequence{
+            .items = {
+                regexExpression(mparse::spec::RegexRange{.from = 'a', .to = 'z'}),
+                regexExpression(mparse::spec::RegexRepeat{
+                    .item = regexExpression(mparse::spec::RegexAlternative{
+                        .alternatives = {
+                            regexExpression(mparse::spec::RegexRange{.from = 'a', .to = 'z'}),
+                            regexExpression(mparse::spec::RegexRange{.from = '0', .to = '9'}),
+                        },
+                    }),
+                    .kind = mparse::spec::RegexRepeatKind::ZeroOrMore,
+                }),
+            },
+        },
+    };
+
+    const auto specification = mparse::spec::Specification{
+        .symbols = {
+            mparse::spec::Symbol{
+                .name = "Identifier",
+                .type = "std::string",
+                .rules = {
+                    mparse::tests::rule(
+                        {
+                            mparse::spec::RuleItem{
+                                .value = mparse::spec::RuleItemRegex{
+                                    .expression = regex,
+                                },
+                            },
+                        },
+                        "$$ = $1"
+                    ),
+                },
+            },
+        },
+    };
+
+    const auto symbols_storage =
+        mparse::analysis::makeSymbolsStorageFromSpecification(specification);
+    const auto automata = symbols_storage.buildAutomata();
+    const auto& automaton = automata.getAutomatonByName("Identifier");
+
+    ASSERT_EQ(automaton.vertices.size(), 3);
+
+    const auto& regex_edge = onlyEdge(automaton, automaton.start);
+    const auto& regex_transition =
+        asTransition<mparse::analysis::RegexTransition>(regex_edge);
+    EXPECT_TRUE(std::holds_alternative<mparse::spec::RegexSequence>(
+        regex_transition.expression.value
+    ));
+
+    const auto& reduce_edge = onlyEdge(automaton, regex_edge.target);
+    const auto& reduce = asTransition<mparse::analysis::ReduceTransition>(reduce_edge);
+    ASSERT_EQ(reduce.argument_types.size(), 1);
+    EXPECT_TRUE(std::holds_alternative<mparse::analysis::TextSemanticValue>(
+        reduce.argument_types.front()
+    ));
 }
 
 TEST(Automaton, BuildsExactSelfRecursiveRuleFromEndToEnd) {

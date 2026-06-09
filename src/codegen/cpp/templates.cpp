@@ -68,6 +68,12 @@ namespace mparse::codegen::cpp {
             ;
     }
 
+    std::string_view regexEdgeGeneratorCaseTemplate() {
+        return
+#include "templates/regex_edge_generator_case.cpp.inja.inc"
+            ;
+    }
+
     std::string_view symbolEdgeGeneratorCaseTemplate() {
         return
 #include "templates/symbol_edge_generator_case.cpp.inja.inc"
