@@ -6,6 +6,7 @@ emit directly.
 The analysis layer is responsible for:
 
 - converting `spec::Specification` into resolved `Symbol` and `Rule` objects;
+- validating symbol references and symbol argument counts;
 - building action trees for semantic actions;
 - expanding nullable rule items into explicit helper symbols;
 - rejecting grammar shapes that can produce non-progressing parser loops;
@@ -29,10 +30,11 @@ It does not parse source files and does not emit target-language code.
 The normal pipeline in `analyze.cpp` is:
 
 1. `makeSymbolsStorageFromSpecification`.
-2. `expandEmptyItems`.
-3. `resolveEmptyCycles`.
-4. `findEmptyEndCycle`.
-5. Return the normalized `SymbolsStorage`.
+2. `validateSymbolReferences`.
+3. `expandEmptyItems`.
+4. `resolveEmptyCycles`.
+5. `findEmptyEndCycle`.
+6. Return the normalized `SymbolsStorage`.
 
 `SymbolsStorage::buildAutomata()` is then called by `src/main.cpp` after
 analysis succeeds.
@@ -50,6 +52,24 @@ analysis succeeds.
 - `SymbolsStorage`: name-indexed container of analyzed symbols. It owns
   generated helper symbols, supports stable name lookup, and builds
   `GrammarAutomata`.
+
+## Symbol Reference Validation
+
+`validate_symbol_references.cpp` runs before nullable expansion, while rules
+still match user-written symbols directly.
+
+For every `RuleItemSymbol`, it checks:
+
+- the referenced symbol exists;
+- the number of call arguments matches the target symbol declaration.
+
+The pass intentionally does not type-check argument expressions. Arguments are
+raw target-language expressions, so C++ type checking happens when the generated
+parser is compiled.
+
+When validation fails, analysis reports either
+`AnalysisErrorKind::UnknownSymbolReference` or
+`AnalysisErrorKind::InvalidSymbolArgumentCount`.
 
 ## Nullable Expansion
 

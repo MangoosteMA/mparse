@@ -3,6 +3,7 @@
 #include <analysis/algo/expand_empty_items.h>
 #include <analysis/algo/find_empty_end_cycles.h>
 #include <analysis/algo/resolve_empty_cycles.h>
+#include <analysis/algo/validate_symbol_references.h>
 #include <analysis/error.h>
 #include <analysis/symbols_storage.h>
 #include <mparse/utils.h>
@@ -17,6 +18,7 @@ namespace mparse::analysis {
         AnalysisOptions options
     ) {
         auto symbols_storage = makeSymbolsStorageFromSpecification(specification);
+        validateSymbolReferences(symbols_storage);
 
         if (options.check_nonprogressing_cycles) {
             symbols_storage = expandEmptyItems(symbols_storage);

@@ -3,6 +3,7 @@ add_executable(mparse_analysis_tests
     empty_cycle_test.cpp
     expand_empty_items_test.cpp
     statistics_test.cpp
+    symbol_reference_validation_test.cpp
 )
 
 target_compile_features(mparse_analysis_tests PRIVATE cxx_std_23)
