@@ -21,7 +21,10 @@ namespace mparse::codegen {
                 );
         }
 
-        VERIFY(false);
+        mparse::failVerification(
+            "unsupported generation language",
+            std::source_location::current()
+        );
     }
 
 } // namespace mparse::codegen

@@ -2,6 +2,7 @@ foreach(required_variable
         MPARSE_EXECUTABLE
         CXX_COMPILER
         EXAMPLE_SOURCE
+        EXPECTED_OUTPUT
         WORKING_DIR)
     if(NOT DEFINED ${required_variable})
         message(FATAL_ERROR "${required_variable} is required")
@@ -10,8 +11,9 @@ endforeach()
 
 file(MAKE_DIRECTORY "${WORKING_DIR}")
 
-set(generated_source "${WORKING_DIR}/hex_color.generated.cpp")
-set(generated_binary "${WORKING_DIR}/hex_color_example")
+get_filename_component(example_name "${EXAMPLE_SOURCE}" NAME_WE)
+set(generated_source "${WORKING_DIR}/${example_name}.generated.cpp")
+set(generated_binary "${WORKING_DIR}/${example_name}_example")
 if(WIN32)
     set(generated_binary "${generated_binary}.exe")
 endif()
@@ -67,8 +69,8 @@ if(NOT run_result EQUAL 0)
     )
 endif()
 
-if(NOT run_output STREQUAL "26 240 156")
+if(NOT run_output STREQUAL "${EXPECTED_OUTPUT}")
     message(FATAL_ERROR
-        "Unexpected hex color example output: '${run_output}'"
+        "Unexpected ${example_name} example output: '${run_output}'"
     )
 endif()

@@ -20,6 +20,10 @@ namespace mparse::codegen::cpp {
         output_ << text << '\n';
     }
 
+    void Writer::write(std::string_view text) {
+        output_ << text;
+    }
+
     std::string Writer::str() const {
         return output_.str();
     }

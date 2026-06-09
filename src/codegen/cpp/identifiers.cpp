@@ -52,11 +52,16 @@ namespace mparse::codegen::cpp {
         return "mparse_parse_" + symbolBaseName(symbol);
     }
 
-    std::string vertexFunctionName(
+    std::string parseGeneratorName(const analysis::SymbolPtr& symbol) {
+        return parseFunctionName(symbol) + "_generator";
+    }
+
+    std::string vertexGeneratorName(
         const analysis::SymbolPtr& symbol,
         size_t vertex_index
     ) {
-        return parseFunctionName(symbol) + "_vertex_" + std::to_string(vertex_index);
+        return parseFunctionName(symbol) + "_vertex_" +
+               std::to_string(vertex_index) + "_generator";
     }
 
     std::string actionFunctionName(size_t action_index) {

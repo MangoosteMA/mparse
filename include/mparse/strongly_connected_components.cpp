@@ -44,7 +44,10 @@ namespace mparse {
                     low_links_[next_vertex]
                 );
             } else if (sccs_[next_vertex] == kUnvisited) {
-                low_links_[vertex] = std::min(low_links_[vertex], ids_[next_vertex]);
+                low_links_[vertex] = std::min(
+                    low_links_[vertex],
+                    ids_[next_vertex]
+                );
             }
         }
 

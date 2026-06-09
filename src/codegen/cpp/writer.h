@@ -11,6 +11,7 @@ namespace mparse::codegen::cpp {
         void indent();
         void unindent();
         void line(std::string_view text = {});
+        void write(std::string_view text);
         std::string str() const;
 
     private:
