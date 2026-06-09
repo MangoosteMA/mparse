@@ -24,6 +24,7 @@ Do not edit src/spec/generated/generated_parser.cpp by hand.
 #include <spec/utils.h>
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,11 @@ namespace mparse::spec::generated {
 
     struct ExpressionData {
         std::string value;
+        std::string source;
+    };
+
+    struct RegexExpressionData {
+        mparse::spec::RegexExpression expression;
         std::string source;
     };
 
@@ -246,6 +252,137 @@ namespace mparse::spec::generated {
         return ExpressionData{
             .value = mparse::spec::trim(content),
             .source = "(" + content + ")",
+        };
+    }
+
+    mparse::spec::RegexExpressionPtr makeRegexExpressionPtr(
+        mparse::spec::RegexExpression expression
+    ) {
+        return std::make_shared<mparse::spec::RegexExpression>(
+            std::move(expression)
+        );
+    }
+
+    RegexExpressionData makeRegexLiteral(const LiteralData& literal) {
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexLiteral{.value = literal.value},
+            },
+            .source = literal.source,
+        };
+    }
+
+    RegexExpressionData makeRegexRange(
+        const LiteralData& from,
+        std::string horizontal_whitespace_left,
+        std::string horizontal_whitespace_right,
+        const LiteralData& to
+    ) {
+        if (from.value.size() != 1 || to.value.size() != 1) {
+            throw std::runtime_error("range boundaries must be one-character literals");
+        }
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexRange{
+                    .from = from.value.front(),
+                    .to = to.value.front(),
+                },
+            },
+            .source = from.source + horizontal_whitespace_left + "-" +
+                      horizontal_whitespace_right + to.source,
+        };
+    }
+
+    RegexExpressionData makeRegexGroup(
+        std::string prefix,
+        const RegexExpressionData& expression,
+        std::string suffix
+    ) {
+        return RegexExpressionData{
+            .expression = expression.expression,
+            .source = std::move(prefix) + expression.source + std::move(suffix),
+        };
+    }
+
+    RegexExpressionData makeRegexRepeat(
+        const RegexExpressionData& expression,
+        std::string postfix
+    ) {
+        const auto repeat_kind =
+            postfix == "*"
+                ? mparse::spec::RegexRepeatKind::ZeroOrMore
+                : mparse::spec::RegexRepeatKind::OneOrMore;
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexRepeat{
+                    .item = makeRegexExpressionPtr(expression.expression),
+                    .kind = repeat_kind,
+                },
+            },
+            .source = expression.source + std::move(postfix),
+        };
+    }
+
+    RegexExpressionData makeRegexSequence(
+        const RegexExpressionData& left,
+        std::string whitespace,
+        const RegexExpressionData& right
+    ) {
+        std::vector<mparse::spec::RegexExpressionPtr> items;
+        if (const auto* left_sequence =
+                std::get_if<mparse::spec::RegexSequence>(&left.expression.value)) {
+            items = left_sequence->items;
+        } else {
+            items.push_back(makeRegexExpressionPtr(left.expression));
+        }
+        items.push_back(makeRegexExpressionPtr(right.expression));
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexSequence{
+                    .items = std::move(items),
+                },
+            },
+            .source = left.source + std::move(whitespace) + right.source,
+        };
+    }
+
+    RegexExpressionData makeRegexAlternative(
+        const RegexExpressionData& left,
+        std::string horizontal_whitespace_left,
+        std::string horizontal_whitespace_right,
+        const RegexExpressionData& right
+    ) {
+        std::vector<mparse::spec::RegexExpressionPtr> alternatives;
+        if (const auto* left_alternative =
+                std::get_if<mparse::spec::RegexAlternative>(&left.expression.value)) {
+            alternatives = left_alternative->alternatives;
+        } else {
+            alternatives.push_back(makeRegexExpressionPtr(left.expression));
+        }
+        alternatives.push_back(makeRegexExpressionPtr(right.expression));
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexAlternative{
+                    .alternatives = std::move(alternatives),
+                },
+            },
+            .source = left.source + std::move(horizontal_whitespace_left) + "|" +
+                      std::move(horizontal_whitespace_right) + right.source,
+        };
+    }
+
+    ParsedRuleItem makeRegexRuleItem(const RegexExpressionData& expression) {
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemRegex{
+                    .expression = expression.expression,
+                },
+            },
+            .source = expression.source,
         };
     }
 
@@ -515,8 +652,45 @@ namespace mparse_spec_generated = mparse::spec::generated;
 //     : HorizontalSpace HorizontalSpaces { $$ = $1 + $2 }
 //
 // RuleItem<mparse_spec_generated::ParsedRuleItem>
+//     : RegexRuleItem { $$ = $1 }
 //     : LiteralOrRange { $$ = $1 }
 //     : SymbolReference { $$ = $1 }
+//
+// RegexRuleItem<mparse_spec_generated::ParsedRuleItem>
+//     : RegexGroup { $$ = mparse_spec_generated::makeRegexRuleItem($1) }
+//     : RegexGroup RegexPostfix { $$ = mparse_spec_generated::makeRegexRuleItem(
+//             mparse_spec_generated::makeRegexRepeat($1, $2)
+//         ) }
+//     : RegexLiteralOrRange RegexPostfix { $$ = mparse_spec_generated::makeRegexRuleItem(
+//             mparse_spec_generated::makeRegexRepeat($1, $2)
+//         ) }
+//
+// RegexAlternative<mparse_spec_generated::RegexExpressionData>
+//     : RegexSequence { $$ = $1 }
+//     : RegexAlternative HorizontalWhitespace '|' HorizontalWhitespace RegexSequence { $$ = mparse_spec_generated::makeRegexAlternative($1, $2, $4, $5) }
+//
+// RegexSequence<mparse_spec_generated::RegexExpressionData>
+//     : RegexRepeat { $$ = $1 }
+//     : RegexSequence HorizontalWhitespace RegexRepeat { $$ = mparse_spec_generated::makeRegexSequence($1, $2, $3) }
+//
+// RegexRepeat<mparse_spec_generated::RegexExpressionData>
+//     : RegexAtom { $$ = $1 }
+//     : RegexAtom RegexPostfix { $$ = mparse_spec_generated::makeRegexRepeat($1, $2) }
+//
+// RegexAtom<mparse_spec_generated::RegexExpressionData>
+//     : RegexLiteralOrRange { $$ = $1 }
+//     : RegexGroup { $$ = $1 }
+//
+// RegexGroup<mparse_spec_generated::RegexExpressionData>
+//     : '(' HorizontalWhitespace RegexAlternative HorizontalWhitespace ')' { $$ = mparse_spec_generated::makeRegexGroup($1 + $2, $3, $4 + $5) }
+//
+// RegexLiteralOrRange<mparse_spec_generated::RegexExpressionData>
+//     : Literal HorizontalWhitespace '-' HorizontalWhitespace Literal { $$ = mparse_spec_generated::makeRegexRange($1, $2, $4, $5) }
+//     : Literal { $$ = mparse_spec_generated::makeRegexLiteral($1) }
+//
+// RegexPostfix<std::string>
+//     : '*' { $$ = $1 }
+//     : '+' { $$ = $1 }
 //
 // LiteralOrRange<mparse_spec_generated::ParsedRuleItem>
 //     : Literal HorizontalWhitespace '-' HorizontalWhitespace Literal { $$ = mparse_spec_generated::makeRangeItem($1, $2, $4, $5) }
@@ -925,6 +1099,71 @@ class mparse_parse_Quote_generator;
 class mparse_parse_Quote_vertex_0_generator;
 class mparse_parse_Quote_vertex_1_generator;
 class mparse_parse_Quote_vertex_2_generator;
+class mparse_parse_RegexAlternative_generator;
+class mparse_parse_RegexAlternative_vertex_0_generator;
+class mparse_parse_RegexAlternative_vertex_1_generator;
+class mparse_parse_RegexAlternative_vertex_2_generator;
+class mparse_parse_RegexAlternative_vertex_3_generator;
+class mparse_parse_RegexAlternative_vertex_4_generator;
+class mparse_parse_RegexAlternative_vertex_5_generator;
+class mparse_parse_RegexAlternative_vertex_6_generator;
+class mparse_parse_RegexAlternative_vertex_7_generator;
+class mparse_parse_RegexAlternative_vertex_8_generator;
+class mparse_parse_RegexAlternative_vertex_9_generator;
+class mparse_parse_RegexAlternative_vertex_10_generator;
+class mparse_parse_RegexAlternative_vertex_11_generator;
+class mparse_parse_RegexAlternative_vertex_12_generator;
+class mparse_parse_RegexAlternative_vertex_13_generator;
+class mparse_parse_RegexAtom_generator;
+class mparse_parse_RegexAtom_vertex_0_generator;
+class mparse_parse_RegexAtom_vertex_1_generator;
+class mparse_parse_RegexAtom_vertex_2_generator;
+class mparse_parse_RegexAtom_vertex_3_generator;
+class mparse_parse_RegexGroup_generator;
+class mparse_parse_RegexGroup_vertex_0_generator;
+class mparse_parse_RegexGroup_vertex_1_generator;
+class mparse_parse_RegexGroup_vertex_2_generator;
+class mparse_parse_RegexGroup_vertex_3_generator;
+class mparse_parse_RegexGroup_vertex_4_generator;
+class mparse_parse_RegexGroup_vertex_5_generator;
+class mparse_parse_RegexGroup_vertex_6_generator;
+class mparse_parse_RegexLiteralOrRange_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_0_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_1_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_2_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_3_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_4_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_5_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_6_generator;
+class mparse_parse_RegexLiteralOrRange_vertex_7_generator;
+class mparse_parse_RegexPostfix_generator;
+class mparse_parse_RegexPostfix_vertex_0_generator;
+class mparse_parse_RegexPostfix_vertex_1_generator;
+class mparse_parse_RegexPostfix_vertex_2_generator;
+class mparse_parse_RegexPostfix_vertex_3_generator;
+class mparse_parse_RegexRepeat_generator;
+class mparse_parse_RegexRepeat_vertex_0_generator;
+class mparse_parse_RegexRepeat_vertex_1_generator;
+class mparse_parse_RegexRepeat_vertex_2_generator;
+class mparse_parse_RegexRepeat_vertex_3_generator;
+class mparse_parse_RegexRepeat_vertex_4_generator;
+class mparse_parse_RegexRuleItem_generator;
+class mparse_parse_RegexRuleItem_vertex_0_generator;
+class mparse_parse_RegexRuleItem_vertex_1_generator;
+class mparse_parse_RegexRuleItem_vertex_2_generator;
+class mparse_parse_RegexRuleItem_vertex_3_generator;
+class mparse_parse_RegexRuleItem_vertex_4_generator;
+class mparse_parse_RegexRuleItem_vertex_5_generator;
+class mparse_parse_RegexRuleItem_vertex_6_generator;
+class mparse_parse_RegexSequence_generator;
+class mparse_parse_RegexSequence_vertex_0_generator;
+class mparse_parse_RegexSequence_vertex_1_generator;
+class mparse_parse_RegexSequence_vertex_2_generator;
+class mparse_parse_RegexSequence_vertex_3_generator;
+class mparse_parse_RegexSequence_vertex_4_generator;
+class mparse_parse_RegexSequence_vertex_5_generator;
+class mparse_parse_RegexSequence_vertex_6_generator;
+class mparse_parse_RegexSequence_vertex_7_generator;
 class mparse_parse_RepeatCountExpression_generator;
 class mparse_parse_RepeatCountExpression_vertex_0_generator;
 class mparse_parse_RepeatCountExpression_vertex_1_generator;
@@ -960,6 +1199,7 @@ class mparse_parse_RuleItem_vertex_0_generator;
 class mparse_parse_RuleItem_vertex_1_generator;
 class mparse_parse_RuleItem_vertex_2_generator;
 class mparse_parse_RuleItem_vertex_3_generator;
+class mparse_parse_RuleItem_vertex_4_generator;
 class mparse_parse_RuleTail_generator;
 class mparse_parse_RuleTail_vertex_0_generator;
 class mparse_parse_RuleTail_vertex_1_generator;
@@ -1227,6 +1467,25 @@ static std::any mparse_action_119(const std::vector<std::any>& args);
 static std::any mparse_action_120(const std::vector<std::any>& args);
 static std::any mparse_action_121(const std::vector<std::any>& args);
 static std::any mparse_action_122(const std::vector<std::any>& args);
+static std::any mparse_action_123(const std::vector<std::any>& args);
+static std::any mparse_action_124(const std::vector<std::any>& args);
+static std::any mparse_action_125(const std::vector<std::any>& args);
+static std::any mparse_action_126(const std::vector<std::any>& args);
+static std::any mparse_action_127(const std::vector<std::any>& args);
+static std::any mparse_action_128(const std::vector<std::any>& args);
+static std::any mparse_action_129(const std::vector<std::any>& args);
+static std::any mparse_action_130(const std::vector<std::any>& args);
+static std::any mparse_action_131(const std::vector<std::any>& args);
+static std::any mparse_action_132(const std::vector<std::any>& args);
+static std::any mparse_action_133(const std::vector<std::any>& args);
+static std::any mparse_action_134(const std::vector<std::any>& args);
+static std::any mparse_action_135(const std::vector<std::any>& args);
+static std::any mparse_action_136(const std::vector<std::any>& args);
+static std::any mparse_action_137(const std::vector<std::any>& args);
+static std::any mparse_action_138(const std::vector<std::any>& args);
+static std::any mparse_action_139(const std::vector<std::any>& args);
+static std::any mparse_action_140(const std::vector<std::any>& args);
+static std::any mparse_action_141(const std::vector<std::any>& args);
 
 static std::any mparse_action_0(const std::vector<std::any>& args) {
     std::string ret{};
@@ -1647,125 +1906,263 @@ static std::any mparse_action_72(const std::vector<std::any>& args) {
 }
 
 static std::any mparse_action_73(const std::vector<std::any>& args) {
-    mparse_spec_generated::ExpressionData ret{};
-    ret = mparse_spec_generated::makeExpression(mparse_generated_detail::semanticValue<std::string>(args, 0));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_74(const std::vector<std::any>& args) {
-    mparse_spec_generated::ExpressionData ret{};
-    ret = mparse_spec_generated::makeExpression(mparse_generated_detail::semanticValue<std::string>(args, 0));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexAlternative(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 4));
     return ret;
 }
 
 static std::any mparse_action_75(const std::vector<std::any>& args) {
-    mparse_spec_generated::ExpressionData ret{};
-    ret = mparse_spec_generated::makeParenthesizedExpression(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    std::vector<std::any> resolved_args;
+    resolved_args.reserve(5);
+    resolved_args.push_back(args.at(0));
+    {
+        std::vector<std::any> nested_args;
+        nested_args.reserve(0);
+        resolved_args.push_back(mparse_action_36(nested_args));
+    }
+    resolved_args.push_back(args.at(1));
+    resolved_args.push_back(args.at(2));
+    resolved_args.push_back(args.at(3));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexAlternative(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(resolved_args, 0), mparse_generated_detail::semanticValue<std::string>(resolved_args, 1), mparse_generated_detail::semanticValue<std::string>(resolved_args, 3), mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(resolved_args, 4));
     return ret;
 }
 
 static std::any mparse_action_76(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleData ret{};
-    ret = mparse_spec_generated::makeRule(mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 2));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_77(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::emptyRuleTail();
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_78(const std::vector<std::any>& args) {
-    return args.at(0);
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexGroup(mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 2), mparse_generated_detail::semanticValue<std::string>(args, 3) + mparse_generated_detail::semanticValue<std::string>(args, 4));
+    return ret;
 }
 
 static std::any mparse_action_79(const std::vector<std::any>& args) {
-    return args.at(0);
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexRange(mparse_generated_detail::semanticValue<mparse_spec_generated::LiteralData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<mparse_spec_generated::LiteralData>(args, 4));
+    return ret;
 }
 
 static std::any mparse_action_80(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::makeRuleBodyFromAction(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexLiteral(mparse_generated_detail::semanticValue<mparse_spec_generated::LiteralData>(args, 0));
     return ret;
 }
 
 static std::any mparse_action_81(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::makeRuleBody(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 1));
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_82(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedRuleItem ret{};
-    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0);
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_83(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedRuleItem ret{};
-    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0);
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_84(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::emptyRuleTail();
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexRepeat(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1));
     return ret;
 }
 
 static std::any mparse_action_85(const std::vector<std::any>& args) {
-    return args.at(0);
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_spec_generated::makeRegexRuleItem(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0));
+    return ret;
 }
 
 static std::any mparse_action_86(const std::vector<std::any>& args) {
-    return args.at(0);
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_spec_generated::makeRegexRuleItem(
+                mparse_spec_generated::makeRegexRepeat(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1))
+            );
+    return ret;
 }
 
 static std::any mparse_action_87(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::makeActionTail(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_spec_generated::makeRegexRuleItem(
+                mparse_spec_generated::makeRegexRepeat(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1))
+            );
     return ret;
 }
 
 static std::any mparse_action_88(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::prependHorizontalSpaces(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 1));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0);
     return ret;
 }
 
 static std::any mparse_action_89(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::prependRuleItem(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 1));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexSequence(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(args, 2));
     return ret;
 }
 
 static std::any mparse_action_90(const std::vector<std::any>& args) {
-    mparse_spec_generated::RuleTailData ret{};
-    ret = mparse_spec_generated::makeActionTail(mparse_generated_detail::semanticValue<std::string>(args, 1));
-    return ret;
-}
-
-static std::any mparse_action_91(const std::vector<std::any>& args) {
-    mparse_spec_generated::RulesData ret{};
-    ret = mparse_spec_generated::makeRules(mparse_generated_detail::semanticValue<mparse_spec_generated::RuleData>(args, 0));
-    return ret;
-}
-
-static std::any mparse_action_92(const std::vector<std::any>& args) {
-    mparse_spec_generated::RulesData ret{};
-    ret = mparse_spec_generated::appendRule(mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleData>(args, 2));
-    return ret;
-}
-
-static std::any mparse_action_93(const std::vector<std::any>& args) {
     std::vector<std::any> resolved_args;
     resolved_args.reserve(3);
     resolved_args.push_back(args.at(0));
     {
         std::vector<std::any> nested_args;
         nested_args.reserve(0);
-        resolved_args.push_back(mparse_action_94(nested_args));
+        resolved_args.push_back(mparse_action_36(nested_args));
+    }
+    resolved_args.push_back(args.at(1));
+    mparse_spec_generated::RegexExpressionData ret{};
+    ret = mparse_spec_generated::makeRegexSequence(mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(resolved_args, 0), mparse_generated_detail::semanticValue<std::string>(resolved_args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RegexExpressionData>(resolved_args, 2));
+    return ret;
+}
+
+static std::any mparse_action_91(const std::vector<std::any>& args) {
+    mparse_spec_generated::ExpressionData ret{};
+    ret = mparse_spec_generated::makeExpression(mparse_generated_detail::semanticValue<std::string>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_92(const std::vector<std::any>& args) {
+    mparse_spec_generated::ExpressionData ret{};
+    ret = mparse_spec_generated::makeExpression(mparse_generated_detail::semanticValue<std::string>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_93(const std::vector<std::any>& args) {
+    mparse_spec_generated::ExpressionData ret{};
+    ret = mparse_spec_generated::makeParenthesizedExpression(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_94(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleData ret{};
+    ret = mparse_spec_generated::makeRule(mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 2));
+    return ret;
+}
+
+static std::any mparse_action_95(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::emptyRuleTail();
+    return ret;
+}
+
+static std::any mparse_action_96(const std::vector<std::any>& args) {
+    return args.at(0);
+}
+
+static std::any mparse_action_97(const std::vector<std::any>& args) {
+    return args.at(0);
+}
+
+static std::any mparse_action_98(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::makeRuleBodyFromAction(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_99(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::makeRuleBody(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_100(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0);
+    return ret;
+}
+
+static std::any mparse_action_101(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0);
+    return ret;
+}
+
+static std::any mparse_action_102(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0);
+    return ret;
+}
+
+static std::any mparse_action_103(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::emptyRuleTail();
+    return ret;
+}
+
+static std::any mparse_action_104(const std::vector<std::any>& args) {
+    return args.at(0);
+}
+
+static std::any mparse_action_105(const std::vector<std::any>& args) {
+    return args.at(0);
+}
+
+static std::any mparse_action_106(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::makeActionTail(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_107(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::prependHorizontalSpaces(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_108(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::prependRuleItem(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedRuleItem>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleTailData>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_109(const std::vector<std::any>& args) {
+    mparse_spec_generated::RuleTailData ret{};
+    ret = mparse_spec_generated::makeActionTail(mparse_generated_detail::semanticValue<std::string>(args, 1));
+    return ret;
+}
+
+static std::any mparse_action_110(const std::vector<std::any>& args) {
+    mparse_spec_generated::RulesData ret{};
+    ret = mparse_spec_generated::makeRules(mparse_generated_detail::semanticValue<mparse_spec_generated::RuleData>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_111(const std::vector<std::any>& args) {
+    mparse_spec_generated::RulesData ret{};
+    ret = mparse_spec_generated::appendRule(mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::RuleData>(args, 2));
+    return ret;
+}
+
+static std::any mparse_action_112(const std::vector<std::any>& args) {
+    std::vector<std::any> resolved_args;
+    resolved_args.reserve(3);
+    resolved_args.push_back(args.at(0));
+    {
+        std::vector<std::any> nested_args;
+        nested_args.reserve(0);
+        resolved_args.push_back(mparse_action_113(nested_args));
     }
     resolved_args.push_back(args.at(1));
     mparse_spec_generated::RulesData ret{};
@@ -1773,25 +2170,25 @@ static std::any mparse_action_93(const std::vector<std::any>& args) {
     return ret;
 }
 
-static std::any mparse_action_94(const std::vector<std::any>& args) {
+static std::any mparse_action_113(const std::vector<std::any>& args) {
     std::string ret{};
     ret = "";
     return ret;
 }
 
-static std::any mparse_action_95(const std::vector<std::any>& args) {
+static std::any mparse_action_114(const std::vector<std::any>& args) {
     std::vector<mparse::spec::Symbol> ret{};
     ret = mparse_spec_generated::finalizeSymbols(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbols>(args, 1));
     return ret;
 }
 
-static std::any mparse_action_96(const std::vector<std::any>& args) {
+static std::any mparse_action_115(const std::vector<std::any>& args) {
     std::vector<std::any> resolved_args;
     resolved_args.reserve(3);
     {
         std::vector<std::any> nested_args;
         nested_args.reserve(0);
-        resolved_args.push_back(mparse_action_94(nested_args));
+        resolved_args.push_back(mparse_action_113(nested_args));
     }
     resolved_args.push_back(args.at(0));
     resolved_args.push_back(args.at(1));
@@ -1800,135 +2197,14 @@ static std::any mparse_action_96(const std::vector<std::any>& args) {
     return ret;
 }
 
-static std::any mparse_action_97(const std::vector<std::any>& args) {
+static std::any mparse_action_116(const std::vector<std::any>& args) {
     std::string ret{};
     ret = "";
     return ret;
 }
 
-static std::any mparse_action_98(const std::vector<std::any>& args) {
-    return args.at(0);
-}
-
-static std::any mparse_action_99(const std::vector<std::any>& args) {
-    return args.at(0);
-}
-
-static std::any mparse_action_100(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1);
-    return ret;
-}
-
-static std::any mparse_action_101(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::LiteralData>(args, 0).source + mparse_generated_detail::semanticValue<std::string>(args, 1);
-    return ret;
-}
-
-static std::any mparse_action_102(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1) + mparse_generated_detail::semanticValue<std::string>(args, 2) + mparse_generated_detail::semanticValue<std::string>(args, 3);
-    return ret;
-}
-
-static std::any mparse_action_103(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
-    return ret;
-}
-
-static std::any mparse_action_104(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
-    return ret;
-}
-
-static std::any mparse_action_105(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_spec_generated::oneChar(mparse_generated_detail::semanticValue<char>(args, 0));
-    return ret;
-}
-
-static std::any mparse_action_106(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_spec_generated::oneChar(mparse_generated_detail::semanticValue<char>(args, 0));
-    return ret;
-}
-
-static std::any mparse_action_107(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
-    return ret;
-}
-
-static std::any mparse_action_108(const std::vector<std::any>& args) {
-    std::string ret{};
-    ret = mparse_spec_generated::oneChar(mparse_generated_detail::semanticValue<char>(args, 0));
-    return ret;
-}
-
-static std::any mparse_action_109(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedSymbol ret{};
-    ret = mparse_spec_generated::makeSymbol(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 2), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 3));
-    return ret;
-}
-
-static std::any mparse_action_110(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedSymbol ret{};
-    ret = mparse_spec_generated::makeSymbolWithArguments(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<std::string>(args, 5), mparse_generated_detail::semanticValue<std::string>(args, 6), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 7));
-    return ret;
-}
-
-static std::any mparse_action_111(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedSymbol ret{};
-    ret = mparse_spec_generated::makeSymbolWithType(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<std::string>(args, 5), mparse_generated_detail::semanticValue<std::string>(args, 6), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 7));
-    return ret;
-}
-
-static std::any mparse_action_112(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedSymbol ret{};
-    ret = mparse_spec_generated::makeSymbolWithArgumentsAndType(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<std::string>(args, 5), mparse_generated_detail::semanticValue<std::string>(args, 7), mparse_generated_detail::semanticValue<std::string>(args, 9), mparse_generated_detail::semanticValue<std::string>(args, 10), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 11));
-    return ret;
-}
-
-static std::any mparse_action_113(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedRuleItem ret{};
-    ret = mparse_spec_generated::makeSymbolReference(mparse_generated_detail::semanticValue<std::string>(args, 0));
-    return ret;
-}
-
-static std::any mparse_action_114(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedRuleItem ret{};
-    ret = mparse_spec_generated::makeSymbolReference(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3));
-    return ret;
-}
-
-static std::any mparse_action_115(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedSymbols ret{};
-    ret = mparse_spec_generated::makeSymbols(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbol>(args, 0));
-    return ret;
-}
-
-static std::any mparse_action_116(const std::vector<std::any>& args) {
-    mparse_spec_generated::ParsedSymbols ret{};
-    ret = mparse_spec_generated::appendSymbol(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbols>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbol>(args, 2));
-    return ret;
-}
-
 static std::any mparse_action_117(const std::vector<std::any>& args) {
-    std::vector<std::any> resolved_args;
-    resolved_args.reserve(3);
-    resolved_args.push_back(args.at(0));
-    {
-        std::vector<std::any> nested_args;
-        nested_args.reserve(0);
-        resolved_args.push_back(mparse_action_94(nested_args));
-    }
-    resolved_args.push_back(args.at(1));
-    mparse_spec_generated::ParsedSymbols ret{};
-    ret = mparse_spec_generated::appendSymbol(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbols>(resolved_args, 0), mparse_generated_detail::semanticValue<std::string>(resolved_args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbol>(resolved_args, 2));
-    return ret;
+    return args.at(0);
 }
 
 static std::any mparse_action_118(const std::vector<std::any>& args) {
@@ -1936,22 +2212,143 @@ static std::any mparse_action_118(const std::vector<std::any>& args) {
 }
 
 static std::any mparse_action_119(const std::vector<std::any>& args) {
-    return args.at(0);
-}
-
-static std::any mparse_action_120(const std::vector<std::any>& args) {
     std::string ret{};
     ret = mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1);
     return ret;
 }
 
+static std::any mparse_action_120(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<mparse_spec_generated::LiteralData>(args, 0).source + mparse_generated_detail::semanticValue<std::string>(args, 1);
+    return ret;
+}
+
 static std::any mparse_action_121(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1) + mparse_generated_detail::semanticValue<std::string>(args, 2) + mparse_generated_detail::semanticValue<std::string>(args, 3);
+    return ret;
+}
+
+static std::any mparse_action_122(const std::vector<std::any>& args) {
     std::string ret{};
     ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
     return ret;
 }
 
-static std::any mparse_action_122(const std::vector<std::any>& args) {
+static std::any mparse_action_123(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
+    return ret;
+}
+
+static std::any mparse_action_124(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_spec_generated::oneChar(mparse_generated_detail::semanticValue<char>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_125(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_spec_generated::oneChar(mparse_generated_detail::semanticValue<char>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_126(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
+    return ret;
+}
+
+static std::any mparse_action_127(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_spec_generated::oneChar(mparse_generated_detail::semanticValue<char>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_128(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedSymbol ret{};
+    ret = mparse_spec_generated::makeSymbol(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 2), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 3));
+    return ret;
+}
+
+static std::any mparse_action_129(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedSymbol ret{};
+    ret = mparse_spec_generated::makeSymbolWithArguments(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<std::string>(args, 5), mparse_generated_detail::semanticValue<std::string>(args, 6), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 7));
+    return ret;
+}
+
+static std::any mparse_action_130(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedSymbol ret{};
+    ret = mparse_spec_generated::makeSymbolWithType(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<std::string>(args, 5), mparse_generated_detail::semanticValue<std::string>(args, 6), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 7));
+    return ret;
+}
+
+static std::any mparse_action_131(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedSymbol ret{};
+    ret = mparse_spec_generated::makeSymbolWithArgumentsAndType(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3), mparse_generated_detail::semanticValue<std::string>(args, 5), mparse_generated_detail::semanticValue<std::string>(args, 7), mparse_generated_detail::semanticValue<std::string>(args, 9), mparse_generated_detail::semanticValue<std::string>(args, 10), mparse_generated_detail::semanticValue<mparse_spec_generated::RulesData>(args, 11));
+    return ret;
+}
+
+static std::any mparse_action_132(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_spec_generated::makeSymbolReference(mparse_generated_detail::semanticValue<std::string>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_133(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedRuleItem ret{};
+    ret = mparse_spec_generated::makeSymbolReference(mparse_generated_detail::semanticValue<std::string>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<std::string>(args, 3));
+    return ret;
+}
+
+static std::any mparse_action_134(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedSymbols ret{};
+    ret = mparse_spec_generated::makeSymbols(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbol>(args, 0));
+    return ret;
+}
+
+static std::any mparse_action_135(const std::vector<std::any>& args) {
+    mparse_spec_generated::ParsedSymbols ret{};
+    ret = mparse_spec_generated::appendSymbol(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbols>(args, 0), mparse_generated_detail::semanticValue<std::string>(args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbol>(args, 2));
+    return ret;
+}
+
+static std::any mparse_action_136(const std::vector<std::any>& args) {
+    std::vector<std::any> resolved_args;
+    resolved_args.reserve(3);
+    resolved_args.push_back(args.at(0));
+    {
+        std::vector<std::any> nested_args;
+        nested_args.reserve(0);
+        resolved_args.push_back(mparse_action_113(nested_args));
+    }
+    resolved_args.push_back(args.at(1));
+    mparse_spec_generated::ParsedSymbols ret{};
+    ret = mparse_spec_generated::appendSymbol(mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbols>(resolved_args, 0), mparse_generated_detail::semanticValue<std::string>(resolved_args, 1), mparse_generated_detail::semanticValue<mparse_spec_generated::ParsedSymbol>(resolved_args, 2));
+    return ret;
+}
+
+static std::any mparse_action_137(const std::vector<std::any>& args) {
+    return args.at(0);
+}
+
+static std::any mparse_action_138(const std::vector<std::any>& args) {
+    return args.at(0);
+}
+
+static std::any mparse_action_139(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0) + mparse_generated_detail::semanticValue<std::string>(args, 1);
+    return ret;
+}
+
+static std::any mparse_action_140(const std::vector<std::any>& args) {
+    std::string ret{};
+    ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
+    return ret;
+}
+
+static std::any mparse_action_141(const std::vector<std::any>& args) {
     std::string ret{};
     ret = mparse_generated_detail::semanticValue<std::string>(args, 0);
     return ret;
@@ -2292,6 +2689,94 @@ public:
     using Result = mparse_generated_detail::Result<std::string>;
 
     mparse_parse_Quote_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexAlternative_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::RegexExpressionData>;
+
+    mparse_parse_RegexAlternative_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexAtom_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::RegexExpressionData>;
+
+    mparse_parse_RegexAtom_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexGroup_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::RegexExpressionData>;
+
+    mparse_parse_RegexGroup_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexLiteralOrRange_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::RegexExpressionData>;
+
+    mparse_parse_RegexLiteralOrRange_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexPostfix_generator {
+public:
+    using Result = mparse_generated_detail::Result<std::string>;
+
+    mparse_parse_RegexPostfix_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexRepeat_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::RegexExpressionData>;
+
+    mparse_parse_RegexRepeat_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexRuleItem_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::ParsedRuleItem>;
+
+    mparse_parse_RegexRuleItem_generator(std::string_view input, size_t position);
+    std::optional<Result> next();
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> partial_generator_;
+};
+
+class mparse_parse_RegexSequence_generator {
+public:
+    using Result = mparse_generated_detail::Result<mparse_spec_generated::RegexExpressionData>;
+
+    mparse_parse_RegexSequence_generator(std::string_view input, size_t position);
     std::optional<Result> next();
 
 private:
@@ -4936,6 +5421,861 @@ private:
     size_t edge_index_ = 0;
 };
 
+class mparse_parse_RegexAlternative_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_5_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_6_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_7_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_7_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_8_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_8_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_9_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_9_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_10_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_10_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_11_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_11_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_12_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_12_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAlternative_vertex_13_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAlternative_vertex_13_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAtom_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAtom_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAtom_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAtom_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAtom_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAtom_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexAtom_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexAtom_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_5_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexGroup_vertex_6_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexGroup_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_5_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_6_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexLiteralOrRange_vertex_7_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexLiteralOrRange_vertex_7_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexPostfix_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexPostfix_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexPostfix_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexPostfix_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexPostfix_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexPostfix_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexPostfix_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexPostfix_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRepeat_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRepeat_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRepeat_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRepeat_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRepeat_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRepeat_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRepeat_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRepeat_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRepeat_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRepeat_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_5_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexRuleItem_vertex_6_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexRuleItem_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_1_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_2_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_5_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_6_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RegexSequence_vertex_7_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RegexSequence_vertex_7_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
 class mparse_parse_RepeatCountExpression_vertex_0_generator : public mparse_generated_detail::SequentialPartialGenerator {
 public:
     mparse_parse_RepeatCountExpression_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack);
@@ -5359,6 +6699,21 @@ private:
 class mparse_parse_RuleItem_vertex_3_generator : public mparse_generated_detail::SequentialPartialGenerator {
 public:
     mparse_parse_RuleItem_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack);
+
+private:
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
+    std::unique_ptr<mparse_generated_detail::PartialGenerator> makeEdge(size_t edge_index);
+
+    std::string_view input_;
+    size_t position_ = 0;
+    std::vector<std::any> stack_;
+    bool terminal_pending_ = false;
+    size_t edge_index_ = 0;
+};
+
+class mparse_parse_RuleItem_vertex_4_generator : public mparse_generated_detail::SequentialPartialGenerator {
+public:
+    mparse_parse_RuleItem_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack);
 
 private:
     std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override;
@@ -7752,6 +9107,134 @@ std::optional<mparse_parse_Quote_generator::Result> mparse_parse_Quote_generator
         return Result{
             .position = partial->position,
             .value = std::any_cast<std::string>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexAlternative_generator::mparse_parse_RegexAlternative_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexAlternative_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexAlternative_generator::Result> mparse_parse_RegexAlternative_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::RegexExpressionData>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexAtom_generator::mparse_parse_RegexAtom_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexAtom_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexAtom_generator::Result> mparse_parse_RegexAtom_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::RegexExpressionData>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexGroup_generator::mparse_parse_RegexGroup_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexGroup_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexGroup_generator::Result> mparse_parse_RegexGroup_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::RegexExpressionData>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexLiteralOrRange_generator::mparse_parse_RegexLiteralOrRange_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexLiteralOrRange_generator::Result> mparse_parse_RegexLiteralOrRange_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::RegexExpressionData>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexPostfix_generator::mparse_parse_RegexPostfix_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexPostfix_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexPostfix_generator::Result> mparse_parse_RegexPostfix_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<std::string>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexRepeat_generator::mparse_parse_RegexRepeat_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexRepeat_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexRepeat_generator::Result> mparse_parse_RegexRepeat_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::RegexExpressionData>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexRuleItem_generator::mparse_parse_RegexRuleItem_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexRuleItem_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexRuleItem_generator::Result> mparse_parse_RegexRuleItem_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::ParsedRuleItem>(partial->stack.back()),
+        };
+    }
+    return std::nullopt;
+}
+
+mparse_parse_RegexSequence_generator::mparse_parse_RegexSequence_generator(std::string_view input, size_t position)
+    : partial_generator_(std::make_unique<mparse_parse_RegexSequence_vertex_0_generator>(input, position, std::vector<std::any>{})) {}
+
+std::optional<mparse_parse_RegexSequence_generator::Result> mparse_parse_RegexSequence_generator::next() {
+    while (auto partial = partial_generator_->next()) {
+        if (partial->stack.empty()) {
+            continue;
+        }
+        return Result{
+            .position = partial->position,
+            .value = std::any_cast<mparse_spec_generated::RegexExpressionData>(partial->stack.back()),
         };
     }
     return std::nullopt;
@@ -14237,6 +15720,2420 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Quote_ve
     }
 }
 
+mparse_parse_RegexAlternative_vertex_0_generator::mparse_parse_RegexAlternative_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_2_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexSequence_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_1_generator::mparse_parse_RegexAlternative_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    while (edge_index_ < 3) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespaceBeforeEmptyPart_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 1: {
+            const std::string_view literal = "|";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_7_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        case 2: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_10_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespaceAfterEmptyPart_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_2_generator::mparse_parse_RegexAlternative_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_73(stack_)};
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_3_generator::mparse_parse_RegexAlternative_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            const std::string_view literal = "|";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_4_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_4_generator::mparse_parse_RegexAlternative_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_5_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_5_generator::mparse_parse_RegexAlternative_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_5_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_5_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_6_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexSequence_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_6_generator::mparse_parse_RegexAlternative_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_6_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_6_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_74(stack_)};
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_7_generator::mparse_parse_RegexAlternative_vertex_7_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_7_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_7_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_8_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_8_generator::mparse_parse_RegexAlternative_vertex_8_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_8_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_8_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_9_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexSequence_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_9_generator::mparse_parse_RegexAlternative_vertex_9_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_9_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_9_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_75(stack_)};
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_10_generator::mparse_parse_RegexAlternative_vertex_10_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_10_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_10_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            const std::string_view literal = "|";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_11_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_11_generator::mparse_parse_RegexAlternative_vertex_11_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_11_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_11_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_12_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_12_generator::mparse_parse_RegexAlternative_vertex_12_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_12_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_12_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAlternative_vertex_13_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexSequence_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAlternative_vertex_13_generator::mparse_parse_RegexAlternative_vertex_13_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_13_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAlternative_vertex_13_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_74(stack_)};
+            return std::make_unique<mparse_parse_RegexAlternative_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAtom_vertex_0_generator::mparse_parse_RegexAtom_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 2) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAtom_vertex_2_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexLiteralOrRange_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 1: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexAtom_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexGroup_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAtom_vertex_1_generator::mparse_parse_RegexAtom_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAtom_vertex_2_generator::mparse_parse_RegexAtom_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_76(stack_)};
+            return std::make_unique<mparse_parse_RegexAtom_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexAtom_vertex_3_generator::mparse_parse_RegexAtom_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexAtom_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_77(stack_)};
+            return std::make_unique<mparse_parse_RegexAtom_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_0_generator::mparse_parse_RegexGroup_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            const std::string_view literal = "(";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexGroup_vertex_2_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_1_generator::mparse_parse_RegexGroup_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_2_generator::mparse_parse_RegexGroup_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexGroup_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_3_generator::mparse_parse_RegexGroup_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexGroup_vertex_4_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexAlternative_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_4_generator::mparse_parse_RegexGroup_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexGroup_vertex_5_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_5_generator::mparse_parse_RegexGroup_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_5_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_5_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            const std::string_view literal = ")";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexGroup_vertex_6_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexGroup_vertex_6_generator::mparse_parse_RegexGroup_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_6_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexGroup_vertex_6_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_78(stack_)};
+            return std::make_unique<mparse_parse_RegexGroup_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_0_generator::mparse_parse_RegexLiteralOrRange_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 2) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_2_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_Literal_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 1: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_7_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_Literal_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_1_generator::mparse_parse_RegexLiteralOrRange_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_2_generator::mparse_parse_RegexLiteralOrRange_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_3_generator::mparse_parse_RegexLiteralOrRange_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            const std::string_view literal = "-";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_4_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_4_generator::mparse_parse_RegexLiteralOrRange_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_5_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespace_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_5_generator::mparse_parse_RegexLiteralOrRange_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_5_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_5_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_6_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_Literal_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_6_generator::mparse_parse_RegexLiteralOrRange_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_6_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_6_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_79(stack_)};
+            return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexLiteralOrRange_vertex_7_generator::mparse_parse_RegexLiteralOrRange_vertex_7_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_7_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexLiteralOrRange_vertex_7_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_80(stack_)};
+            return std::make_unique<mparse_parse_RegexLiteralOrRange_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexPostfix_vertex_0_generator::mparse_parse_RegexPostfix_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 2) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            const std::string_view literal = "*";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexPostfix_vertex_2_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        case 1: {
+            const std::string_view literal = "+";
+            if (position_ > input_.size() || input_.substr(position_, literal.size()) != literal) {
+                return nullptr;
+            }
+            auto next_stack = stack_;
+            next_stack.push_back(std::string{literal});
+            return std::make_unique<mparse_parse_RegexPostfix_vertex_3_generator>(input_, position_ + literal.size(), std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexPostfix_vertex_1_generator::mparse_parse_RegexPostfix_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexPostfix_vertex_2_generator::mparse_parse_RegexPostfix_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_81(stack_)};
+            return std::make_unique<mparse_parse_RegexPostfix_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexPostfix_vertex_3_generator::mparse_parse_RegexPostfix_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexPostfix_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_82(stack_)};
+            return std::make_unique<mparse_parse_RegexPostfix_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRepeat_vertex_0_generator::mparse_parse_RegexRepeat_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 2) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRepeat_vertex_2_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexAtom_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 1: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRepeat_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexAtom_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRepeat_vertex_1_generator::mparse_parse_RegexRepeat_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRepeat_vertex_2_generator::mparse_parse_RegexRepeat_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_83(stack_)};
+            return std::make_unique<mparse_parse_RegexRepeat_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRepeat_vertex_3_generator::mparse_parse_RegexRepeat_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRepeat_vertex_4_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexPostfix_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRepeat_vertex_4_generator::mparse_parse_RegexRepeat_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRepeat_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_84(stack_)};
+            return std::make_unique<mparse_parse_RegexRepeat_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_0_generator::mparse_parse_RegexRuleItem_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 3) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRuleItem_vertex_2_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexGroup_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 1: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRuleItem_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexGroup_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 2: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRuleItem_vertex_5_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexLiteralOrRange_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_1_generator::mparse_parse_RegexRuleItem_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_2_generator::mparse_parse_RegexRuleItem_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_85(stack_)};
+            return std::make_unique<mparse_parse_RegexRuleItem_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_3_generator::mparse_parse_RegexRuleItem_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRuleItem_vertex_4_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexPostfix_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_4_generator::mparse_parse_RegexRuleItem_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_86(stack_)};
+            return std::make_unique<mparse_parse_RegexRuleItem_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_5_generator::mparse_parse_RegexRuleItem_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_5_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_5_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexRuleItem_vertex_6_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexPostfix_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexRuleItem_vertex_6_generator::mparse_parse_RegexRuleItem_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_6_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexRuleItem_vertex_6_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_87(stack_)};
+            return std::make_unique<mparse_parse_RegexRuleItem_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_0_generator::mparse_parse_RegexSequence_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_0_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_0_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexSequence_vertex_2_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexRepeat_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_1_generator::mparse_parse_RegexSequence_vertex_1_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(!stack_.empty())
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_1_generator::makeNextGenerator() {
+    if (terminal_pending_) {
+        terminal_pending_ = false;
+        return std::make_unique<mparse_generated_detail::SinglePartialGenerator>(
+            mparse_generated_detail::PartialResult{
+                .position = position_,
+                .stack = stack_,
+            }
+        );
+    }
+    while (edge_index_ < 3) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_1_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexSequence_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespaceBeforeEmptyPart_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 1: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexSequence_vertex_5_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexRepeat_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 2: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexSequence_vertex_6_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_HorizontalWhitespaceAfterEmptyPart_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_2_generator::mparse_parse_RegexSequence_vertex_2_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_2_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_2_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_88(stack_)};
+            return std::make_unique<mparse_parse_RegexSequence_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_3_generator::mparse_parse_RegexSequence_vertex_3_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_3_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_3_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexSequence_vertex_4_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexRepeat_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_4_generator::mparse_parse_RegexSequence_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_89(stack_)};
+            return std::make_unique<mparse_parse_RegexSequence_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_5_generator::mparse_parse_RegexSequence_vertex_5_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_5_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_5_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_90(stack_)};
+            return std::make_unique<mparse_parse_RegexSequence_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_6_generator::mparse_parse_RegexSequence_vertex_6_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_6_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_6_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RegexSequence_vertex_7_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_RegexRepeat_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RegexSequence_vertex_7_generator::mparse_parse_RegexSequence_vertex_7_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_7_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RegexSequence_vertex_7_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_89(stack_)};
+            return std::make_unique<mparse_parse_RegexSequence_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
 mparse_parse_RepeatCountExpression_vertex_0_generator::mparse_parse_RepeatCountExpression_vertex_0_generator(std::string_view input, size_t position, std::vector<std::any> stack)
     : input_(input)
     , position_(position)
@@ -14369,7 +18266,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RepeatCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RepeatCountExpression_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_73(stack_)};
+            std::vector<std::any> next_stack{mparse_action_91(stack_)};
             return std::make_unique<mparse_parse_RepeatCountExpression_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -14397,7 +18294,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RepeatCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RepeatCountExpression_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_74(stack_)};
+            std::vector<std::any> next_stack{mparse_action_92(stack_)};
             return std::make_unique<mparse_parse_RepeatCountExpression_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -14508,7 +18405,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RepeatCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RepeatCountExpression_vertex_6_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_75(stack_)};
+            std::vector<std::any> next_stack{mparse_action_93(stack_)};
             return std::make_unique<mparse_parse_RepeatCountExpression_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -14696,7 +18593,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rule_ver
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rule_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_76(stack_)};
+            std::vector<std::any> next_stack{mparse_action_94(stack_)};
             return std::make_unique<mparse_parse_Rule_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -14750,7 +18647,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody
             return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
         }
         case 1: {
-            std::vector<std::any> next_stack{mparse_action_77(stack_)};
+            std::vector<std::any> next_stack{mparse_action_95(stack_)};
             return std::make_unique<mparse_parse_RuleBody_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         case 2: {
@@ -14831,7 +18728,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_78(stack_)};
+            std::vector<std::any> next_stack{mparse_action_96(stack_)};
             return std::make_unique<mparse_parse_RuleBody_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -14859,7 +18756,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_79(stack_)};
+            std::vector<std::any> next_stack{mparse_action_97(stack_)};
             return std::make_unique<mparse_parse_RuleBody_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15056,7 +18953,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBodyAfterEmptyPart_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_80(stack_)};
+            std::vector<std::any> next_stack{mparse_action_98(stack_)};
             return std::make_unique<mparse_parse_RuleBodyAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15134,7 +19031,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBody
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleBodyAfterEmptyPart_vertex_6_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_81(stack_)};
+            std::vector<std::any> next_stack{mparse_action_99(stack_)};
             return std::make_unique<mparse_parse_RuleBodyAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15195,7 +19092,7 @@ mparse_parse_RuleItem_vertex_0_generator::mparse_parse_RuleItem_vertex_0_generat
     {}
 
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem_vertex_0_generator::makeNextGenerator() {
-    while (edge_index_ < 2) {
+    while (edge_index_ < 3) {
         auto generator = makeEdge(edge_index_++);
         if (generator) {
             return generator;
@@ -15228,7 +19125,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem
 
                 std::string_view input;
                 std::vector<std::any> stack;
-                mparse_parse_LiteralOrRange_generator nested_generator;
+                mparse_parse_RegexRuleItem_generator nested_generator;
             };
             return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
         }
@@ -15250,6 +19147,32 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem
                     auto next_stack = stack;
                     next_stack.push_back(nested->value);
                     return std::make_unique<mparse_parse_RuleItem_vertex_3_generator>(input, nested->position, std::move(next_stack));
+                }
+
+                std::string_view input;
+                std::vector<std::any> stack;
+                mparse_parse_LiteralOrRange_generator nested_generator;
+            };
+            return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
+        }
+        case 2: {
+            class SymbolEdgeGenerator : public mparse_generated_detail::SequentialPartialGenerator {
+            public:
+                SymbolEdgeGenerator(std::string_view input, size_t position, std::vector<std::any> stack)
+                    : input(input)
+                    , stack(std::move(stack))
+                    , nested_generator(input, position)
+                    {}
+
+            private:
+                std::unique_ptr<mparse_generated_detail::PartialGenerator> makeNextGenerator() override {
+                    auto nested = nested_generator.next();
+                    if (!nested) {
+                        return nullptr;
+                    }
+                    auto next_stack = stack;
+                    next_stack.push_back(nested->value);
+                    return std::make_unique<mparse_parse_RuleItem_vertex_4_generator>(input, nested->position, std::move(next_stack));
                 }
 
                 std::string_view input;
@@ -15310,7 +19233,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_82(stack_)};
+            std::vector<std::any> next_stack{mparse_action_100(stack_)};
             return std::make_unique<mparse_parse_RuleItem_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15338,7 +19261,35 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_83(stack_)};
+            std::vector<std::any> next_stack{mparse_action_101(stack_)};
+            return std::make_unique<mparse_parse_RuleItem_vertex_1_generator>(input_, position_, std::move(next_stack));
+        }
+        default:
+            return nullptr;
+    }
+}
+
+mparse_parse_RuleItem_vertex_4_generator::mparse_parse_RuleItem_vertex_4_generator(std::string_view input, size_t position, std::vector<std::any> stack)
+    : input_(input)
+    , position_(position)
+    , stack_(std::move(stack))
+    , terminal_pending_(false)
+    {}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem_vertex_4_generator::makeNextGenerator() {
+    while (edge_index_ < 1) {
+        auto generator = makeEdge(edge_index_++);
+        if (generator) {
+            return generator;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleItem_vertex_4_generator::makeEdge(size_t edge_index) {
+    switch (edge_index) {
+        case 0: {
+            std::vector<std::any> next_stack{mparse_action_102(stack_)};
             return std::make_unique<mparse_parse_RuleItem_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15392,7 +19343,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
             return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
         }
         case 1: {
-            std::vector<std::any> next_stack{mparse_action_84(stack_)};
+            std::vector<std::any> next_stack{mparse_action_103(stack_)};
             return std::make_unique<mparse_parse_RuleTail_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         case 2: {
@@ -15473,7 +19424,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_85(stack_)};
+            std::vector<std::any> next_stack{mparse_action_104(stack_)};
             return std::make_unique<mparse_parse_RuleTail_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15501,7 +19452,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_86(stack_)};
+            std::vector<std::any> next_stack{mparse_action_105(stack_)};
             return std::make_unique<mparse_parse_RuleTail_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15698,7 +19649,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTailAfterEmptyPart_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_87(stack_)};
+            std::vector<std::any> next_stack{mparse_action_106(stack_)};
             return std::make_unique<mparse_parse_RuleTailAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15776,7 +19727,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTailAfterEmptyPart_vertex_6_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_88(stack_)};
+            std::vector<std::any> next_stack{mparse_action_107(stack_)};
             return std::make_unique<mparse_parse_RuleTailAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -15940,7 +19891,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTailAfterSpaces_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_89(stack_)};
+            std::vector<std::any> next_stack{mparse_action_108(stack_)};
             return std::make_unique<mparse_parse_RuleTailAfterSpaces_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16051,7 +20002,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTail
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_RuleTailAfterSpaces_vertex_6_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_90(stack_)};
+            std::vector<std::any> next_stack{mparse_action_109(stack_)};
             return std::make_unique<mparse_parse_RuleTailAfterSpaces_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16285,7 +20236,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_ve
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_91(stack_)};
+            std::vector<std::any> next_stack{mparse_action_110(stack_)};
             return std::make_unique<mparse_parse_Rules_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16363,7 +20314,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_ve
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_92(stack_)};
+            std::vector<std::any> next_stack{mparse_action_111(stack_)};
             return std::make_unique<mparse_parse_Rules_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16391,7 +20342,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_ve
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_vertex_5_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_93(stack_)};
+            std::vector<std::any> next_stack{mparse_action_112(stack_)};
             return std::make_unique<mparse_parse_Rules_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16469,7 +20420,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_ve
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Rules_vertex_7_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_92(stack_)};
+            std::vector<std::any> next_stack{mparse_action_111(stack_)};
             return std::make_unique<mparse_parse_Rules_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16726,7 +20677,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Spec_ver
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Spec_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_95(stack_)};
+            std::vector<std::any> next_stack{mparse_action_114(stack_)};
             return std::make_unique<mparse_parse_Spec_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16804,7 +20755,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Spec_ver
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Spec_vertex_6_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_96(stack_)};
+            std::vector<std::any> next_stack{mparse_action_115(stack_)};
             return std::make_unique<mparse_parse_Spec_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16932,7 +20883,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Spec_ver
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Spec_vertex_9_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_95(stack_)};
+            std::vector<std::any> next_stack{mparse_action_114(stack_)};
             return std::make_unique<mparse_parse_Spec_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -16986,7 +20937,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareCo
             return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
         }
         case 1: {
-            std::vector<std::any> next_stack{mparse_action_97(stack_)};
+            std::vector<std::any> next_stack{mparse_action_116(stack_)};
             return std::make_unique<mparse_parse_SquareContent_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         case 2: {
@@ -17067,7 +21018,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareContent_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_98(stack_)};
+            std::vector<std::any> next_stack{mparse_action_117(stack_)};
             return std::make_unique<mparse_parse_SquareContent_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17095,7 +21046,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareContent_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_99(stack_)};
+            std::vector<std::any> next_stack{mparse_action_118(stack_)};
             return std::make_unique<mparse_parse_SquareContent_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17285,7 +21236,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareContentAfterEmptyPart_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_100(stack_)};
+            std::vector<std::any> next_stack{mparse_action_119(stack_)};
             return std::make_unique<mparse_parse_SquareContentAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17363,7 +21314,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareContentAfterEmptyPart_vertex_5_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_101(stack_)};
+            std::vector<std::any> next_stack{mparse_action_120(stack_)};
             return std::make_unique<mparse_parse_SquareContentAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17524,7 +21475,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareCo
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquareContentAfterEmptyPart_vertex_9_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_102(stack_)};
+            std::vector<std::any> next_stack{mparse_action_121(stack_)};
             return std::make_unique<mparse_parse_SquareContentAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17750,7 +21701,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePl
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePlainChar_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_103(stack_)};
+            std::vector<std::any> next_stack{mparse_action_122(stack_)};
             return std::make_unique<mparse_parse_SquarePlainChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17778,7 +21729,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePl
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePlainChar_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_104(stack_)};
+            std::vector<std::any> next_stack{mparse_action_123(stack_)};
             return std::make_unique<mparse_parse_SquarePlainChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17806,7 +21757,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePl
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePlainChar_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_105(stack_)};
+            std::vector<std::any> next_stack{mparse_action_124(stack_)};
             return std::make_unique<mparse_parse_SquarePlainChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17834,7 +21785,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePl
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePlainChar_vertex_5_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_106(stack_)};
+            std::vector<std::any> next_stack{mparse_action_125(stack_)};
             return std::make_unique<mparse_parse_SquarePlainChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17862,7 +21813,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePl
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePlainChar_vertex_6_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_107(stack_)};
+            std::vector<std::any> next_stack{mparse_action_126(stack_)};
             return std::make_unique<mparse_parse_SquarePlainChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -17890,7 +21841,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePl
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SquarePlainChar_vertex_7_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_108(stack_)};
+            std::vector<std::any> next_stack{mparse_action_127(stack_)};
             return std::make_unique<mparse_parse_SquarePlainChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -18223,7 +22174,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_v
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_vertex_5_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_109(stack_)};
+            std::vector<std::any> next_stack{mparse_action_128(stack_)};
             return std::make_unique<mparse_parse_Symbol_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -18567,7 +22518,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_v
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_vertex_13_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_110(stack_)};
+            std::vector<std::any> next_stack{mparse_action_129(stack_)};
             return std::make_unique<mparse_parse_Symbol_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -18911,7 +22862,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_v
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_vertex_21_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_111(stack_)};
+            std::vector<std::any> next_stack{mparse_action_130(stack_)};
             return std::make_unique<mparse_parse_Symbol_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -19421,7 +23372,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_v
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbol_vertex_33_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_112(stack_)};
+            std::vector<std::any> next_stack{mparse_action_131(stack_)};
             return std::make_unique<mparse_parse_Symbol_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -19552,7 +23503,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SymbolRe
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SymbolReference_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_113(stack_)};
+            std::vector<std::any> next_stack{mparse_action_132(stack_)};
             return std::make_unique<mparse_parse_SymbolReference_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -19746,7 +23697,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SymbolRe
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_SymbolReference_vertex_7_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_114(stack_)};
+            std::vector<std::any> next_stack{mparse_action_133(stack_)};
             return std::make_unique<mparse_parse_SymbolReference_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -19935,7 +23886,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_115(stack_)};
+            std::vector<std::any> next_stack{mparse_action_134(stack_)};
             return std::make_unique<mparse_parse_Symbols_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20013,7 +23964,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_vertex_4_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_116(stack_)};
+            std::vector<std::any> next_stack{mparse_action_135(stack_)};
             return std::make_unique<mparse_parse_Symbols_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20041,7 +23992,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_vertex_5_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_117(stack_)};
+            std::vector<std::any> next_stack{mparse_action_136(stack_)};
             return std::make_unique<mparse_parse_Symbols_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20119,7 +24070,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Symbols_vertex_7_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_116(stack_)};
+            std::vector<std::any> next_stack{mparse_action_135(stack_)};
             return std::make_unique<mparse_parse_Symbols_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20173,7 +24124,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespa
             return std::make_unique<SymbolEdgeGenerator>(input_, position_, stack_);
         }
         case 1: {
-            std::vector<std::any> next_stack{mparse_action_94(stack_)};
+            std::vector<std::any> next_stack{mparse_action_113(stack_)};
             return std::make_unique<mparse_parse_Whitespace_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         case 2: {
@@ -20254,7 +24205,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespa
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespace_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_118(stack_)};
+            std::vector<std::any> next_stack{mparse_action_137(stack_)};
             return std::make_unique<mparse_parse_Whitespace_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20282,7 +24233,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespa
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespace_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_119(stack_)};
+            std::vector<std::any> next_stack{mparse_action_138(stack_)};
             return std::make_unique<mparse_parse_Whitespace_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20437,7 +24388,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespa
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_WhitespaceAfterEmptyPart_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_120(stack_)};
+            std::vector<std::any> next_stack{mparse_action_139(stack_)};
             return std::make_unique<mparse_parse_WhitespaceAfterEmptyPart_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20613,7 +24564,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespa
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_WhitespaceChar_vertex_2_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_121(stack_)};
+            std::vector<std::any> next_stack{mparse_action_140(stack_)};
             return std::make_unique<mparse_parse_WhitespaceChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:
@@ -20641,7 +24592,7 @@ std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_Whitespa
 std::unique_ptr<mparse_generated_detail::PartialGenerator> mparse_parse_WhitespaceChar_vertex_3_generator::makeEdge(size_t edge_index) {
     switch (edge_index) {
         case 0: {
-            std::vector<std::any> next_stack{mparse_action_122(stack_)};
+            std::vector<std::any> next_stack{mparse_action_141(stack_)};
             return std::make_unique<mparse_parse_WhitespaceChar_vertex_1_generator>(input_, position_, std::move(next_stack));
         }
         default:

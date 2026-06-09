@@ -3,6 +3,9 @@
 #include "utils.h"
 
 #include <cctype>
+#include <memory>
+#include <utility>
+#include <variant>
 
 namespace mparse::spec {
 
@@ -250,12 +253,19 @@ namespace mparse::spec {
     }
 
     RuleItem Parser::parseRuleItem() {
-        if (peek() == '\'') {
-            return RuleItem{.value = parseLiteralOrRange()};
+        if (peek() == '(') {
+            return RuleItem{.value = parseParenthesizedRegexRuleItem()};
         }
 
-        if (peek() == '(') {
-            fail("grouped expressions and non-literal quantifiers are not supported yet");
+        if (peek() == '\'') {
+            auto item = parseLiteralOrRange();
+            if (const auto repeat_kind = consumeRegexRepeatKind()) {
+                return RuleItem{.value = makePostfixRegexRuleItem(
+                    std::move(item),
+                    *repeat_kind
+                )};
+            }
+            return RuleItem{.value = std::move(item)};
         }
 
         return RuleItem{.value = parseSymbolReference()};
@@ -335,6 +345,169 @@ namespace mparse::spec {
             fail("expected repeat count expression after '^'");
         }
         return result;
+    }
+
+    namespace {
+
+        RegexExpressionPtr makeRegexExpressionPtr(RegexExpression expression) {
+            return std::make_shared<RegexExpression>(std::move(expression));
+        }
+
+    } // namespace
+
+    RuleItemRegex Parser::parseParenthesizedRegexRuleItem() {
+        auto expression = parseRegexAtom();
+        if (const auto repeat_kind = consumeRegexRepeatKind()) {
+            expression = RegexExpression{
+                .value = RegexRepeat{
+                    .item = makeRegexExpressionPtr(std::move(expression)),
+                    .kind = *repeat_kind,
+                },
+            };
+        }
+
+        return RuleItemRegex{
+            .expression = std::move(expression),
+        };
+    }
+
+    RuleItemRegex Parser::makePostfixRegexRuleItem(
+        RuleItemValue item,
+        RegexRepeatKind repeat_kind
+    ) {
+        RegexExpression expression;
+        if (auto* literal = std::get_if<RuleItemLiteral>(&item)) {
+            expression = RegexExpression{
+                .value = RegexLiteral{.value = std::move(literal->value)},
+            };
+        } else if (auto* range = std::get_if<RuleItemRange>(&item)) {
+            expression = RegexExpression{
+                .value = RegexRange{
+                    .from = range->from,
+                    .to = range->to,
+                },
+            };
+        } else {
+            fail("only literal and range items can use regex postfix operators");
+        }
+
+        return RuleItemRegex{
+            .expression = RegexExpression{
+                .value = RegexRepeat{
+                    .item = makeRegexExpressionPtr(std::move(expression)),
+                    .kind = repeat_kind,
+                },
+            },
+        };
+    }
+
+    RegexExpression Parser::parseRegexAlternative() {
+        std::vector<RegexExpressionPtr> alternatives;
+        alternatives.push_back(makeRegexExpressionPtr(parseRegexSequence()));
+
+        skipHorizontalSpaces();
+        while (consumeIf('|')) {
+            skipHorizontalSpaces();
+            alternatives.push_back(makeRegexExpressionPtr(parseRegexSequence()));
+            skipHorizontalSpaces();
+        }
+
+        if (alternatives.size() == 1) {
+            return std::move(*alternatives.front());
+        }
+
+        return RegexExpression{
+            .value = RegexAlternative{
+                .alternatives = std::move(alternatives),
+            },
+        };
+    }
+
+    RegexExpression Parser::parseRegexSequence() {
+        std::vector<RegexExpressionPtr> items;
+
+        skipHorizontalSpaces();
+        while (peek() == '\'' || peek() == '(') {
+            items.push_back(makeRegexExpressionPtr(parseRegexRepeat()));
+            skipHorizontalSpaces();
+        }
+
+        if (items.empty()) {
+            fail("expected regex expression");
+        }
+
+        if (items.size() == 1) {
+            return std::move(*items.front());
+        }
+
+        return RegexExpression{
+            .value = RegexSequence{
+                .items = std::move(items),
+            },
+        };
+    }
+
+    RegexExpression Parser::parseRegexRepeat() {
+        auto expression = parseRegexAtom();
+
+        skipHorizontalSpaces();
+        if (const auto repeat_kind = consumeRegexRepeatKind()) {
+            return RegexExpression{
+                .value = RegexRepeat{
+                    .item = makeRegexExpressionPtr(std::move(expression)),
+                    .kind = *repeat_kind,
+                },
+            };
+        }
+
+        return expression;
+    }
+
+    RegexExpression Parser::parseRegexAtom() {
+        if (peek() == '\'') {
+            return parseRegexLiteralOrRange();
+        }
+
+        expect('(');
+        skipHorizontalSpaces();
+        auto expression = parseRegexAlternative();
+        skipHorizontalSpaces();
+        expect(')');
+        return expression;
+    }
+
+    RegexExpression Parser::parseRegexLiteralOrRange() {
+        const auto first_literal = parseLiteralText();
+        skipHorizontalSpaces();
+
+        if (!consumeIf('-')) {
+            return RegexExpression{
+                .value = RegexLiteral{.value = first_literal},
+            };
+        }
+
+        skipHorizontalSpaces();
+        const auto second_literal = parseLiteralText();
+        if (first_literal.size() != 1 || second_literal.size() != 1) {
+            fail("range boundaries must be one-character literals");
+        }
+
+        return RegexExpression{
+            .value = RegexRange{
+                .from = first_literal.front(),
+                .to = second_literal.front(),
+            },
+        };
+    }
+
+    std::optional<RegexRepeatKind> Parser::consumeRegexRepeatKind() {
+        if (consumeIf('*')) {
+            return RegexRepeatKind::ZeroOrMore;
+        }
+        if (consumeIf('+')) {
+            return RegexRepeatKind::OneOrMore;
+        }
+        return std::nullopt;
     }
 
     std::string Parser::parseLiteralText() {

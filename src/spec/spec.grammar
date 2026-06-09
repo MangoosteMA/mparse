@@ -24,6 +24,7 @@ Do not edit src/spec/generated/generated_parser.cpp by hand.
 #include <spec/utils.h>
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,11 @@ namespace mparse::spec::generated {
 
     struct ExpressionData {
         std::string value;
+        std::string source;
+    };
+
+    struct RegexExpressionData {
+        mparse::spec::RegexExpression expression;
         std::string source;
     };
 
@@ -246,6 +252,137 @@ namespace mparse::spec::generated {
         return ExpressionData{
             .value = mparse::spec::trim(content),
             .source = "(" + content + ")",
+        };
+    }
+
+    mparse::spec::RegexExpressionPtr makeRegexExpressionPtr(
+        mparse::spec::RegexExpression expression
+    ) {
+        return std::make_shared<mparse::spec::RegexExpression>(
+            std::move(expression)
+        );
+    }
+
+    RegexExpressionData makeRegexLiteral(const LiteralData& literal) {
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexLiteral{.value = literal.value},
+            },
+            .source = literal.source,
+        };
+    }
+
+    RegexExpressionData makeRegexRange(
+        const LiteralData& from,
+        std::string horizontal_whitespace_left,
+        std::string horizontal_whitespace_right,
+        const LiteralData& to
+    ) {
+        if (from.value.size() != 1 || to.value.size() != 1) {
+            throw std::runtime_error("range boundaries must be one-character literals");
+        }
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexRange{
+                    .from = from.value.front(),
+                    .to = to.value.front(),
+                },
+            },
+            .source = from.source + horizontal_whitespace_left + "-" +
+                      horizontal_whitespace_right + to.source,
+        };
+    }
+
+    RegexExpressionData makeRegexGroup(
+        std::string prefix,
+        const RegexExpressionData& expression,
+        std::string suffix
+    ) {
+        return RegexExpressionData{
+            .expression = expression.expression,
+            .source = std::move(prefix) + expression.source + std::move(suffix),
+        };
+    }
+
+    RegexExpressionData makeRegexRepeat(
+        const RegexExpressionData& expression,
+        std::string postfix
+    ) {
+        const auto repeat_kind =
+            postfix == "*"
+                ? mparse::spec::RegexRepeatKind::ZeroOrMore
+                : mparse::spec::RegexRepeatKind::OneOrMore;
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexRepeat{
+                    .item = makeRegexExpressionPtr(expression.expression),
+                    .kind = repeat_kind,
+                },
+            },
+            .source = expression.source + std::move(postfix),
+        };
+    }
+
+    RegexExpressionData makeRegexSequence(
+        const RegexExpressionData& left,
+        std::string whitespace,
+        const RegexExpressionData& right
+    ) {
+        std::vector<mparse::spec::RegexExpressionPtr> items;
+        if (const auto* left_sequence =
+                std::get_if<mparse::spec::RegexSequence>(&left.expression.value)) {
+            items = left_sequence->items;
+        } else {
+            items.push_back(makeRegexExpressionPtr(left.expression));
+        }
+        items.push_back(makeRegexExpressionPtr(right.expression));
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexSequence{
+                    .items = std::move(items),
+                },
+            },
+            .source = left.source + std::move(whitespace) + right.source,
+        };
+    }
+
+    RegexExpressionData makeRegexAlternative(
+        const RegexExpressionData& left,
+        std::string horizontal_whitespace_left,
+        std::string horizontal_whitespace_right,
+        const RegexExpressionData& right
+    ) {
+        std::vector<mparse::spec::RegexExpressionPtr> alternatives;
+        if (const auto* left_alternative =
+                std::get_if<mparse::spec::RegexAlternative>(&left.expression.value)) {
+            alternatives = left_alternative->alternatives;
+        } else {
+            alternatives.push_back(makeRegexExpressionPtr(left.expression));
+        }
+        alternatives.push_back(makeRegexExpressionPtr(right.expression));
+
+        return RegexExpressionData{
+            .expression = mparse::spec::RegexExpression{
+                .value = mparse::spec::RegexAlternative{
+                    .alternatives = std::move(alternatives),
+                },
+            },
+            .source = left.source + std::move(horizontal_whitespace_left) + "|" +
+                      std::move(horizontal_whitespace_right) + right.source,
+        };
+    }
+
+    ParsedRuleItem makeRegexRuleItem(const RegexExpressionData& expression) {
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemRegex{
+                    .expression = expression.expression,
+                },
+            },
+            .source = expression.source,
         };
     }
 
@@ -552,10 +689,81 @@ HorizontalSpaces<std::string>
     }
 
 RuleItem<mparse_spec_generated::ParsedRuleItem>
+    : RegexRuleItem {
+        $$ = $1
+    }
     : LiteralOrRange {
         $$ = $1
     }
     : SymbolReference {
+        $$ = $1
+    }
+
+RegexRuleItem<mparse_spec_generated::ParsedRuleItem>
+    : RegexGroup {
+        $$ = mparse_spec_generated::makeRegexRuleItem($1)
+    }
+    : RegexGroup RegexPostfix {
+        $$ = mparse_spec_generated::makeRegexRuleItem(
+            mparse_spec_generated::makeRegexRepeat($1, $2)
+        )
+    }
+    : RegexLiteralOrRange RegexPostfix {
+        $$ = mparse_spec_generated::makeRegexRuleItem(
+            mparse_spec_generated::makeRegexRepeat($1, $2)
+        )
+    }
+
+RegexAlternative<mparse_spec_generated::RegexExpressionData>
+    : RegexSequence {
+        $$ = $1
+    }
+    : RegexAlternative HorizontalWhitespace '|' HorizontalWhitespace RegexSequence {
+        $$ = mparse_spec_generated::makeRegexAlternative($1, $2, $4, $5)
+    }
+
+RegexSequence<mparse_spec_generated::RegexExpressionData>
+    : RegexRepeat {
+        $$ = $1
+    }
+    : RegexSequence HorizontalWhitespace RegexRepeat {
+        $$ = mparse_spec_generated::makeRegexSequence($1, $2, $3)
+    }
+
+RegexRepeat<mparse_spec_generated::RegexExpressionData>
+    : RegexAtom {
+        $$ = $1
+    }
+    : RegexAtom RegexPostfix {
+        $$ = mparse_spec_generated::makeRegexRepeat($1, $2)
+    }
+
+RegexAtom<mparse_spec_generated::RegexExpressionData>
+    : RegexLiteralOrRange {
+        $$ = $1
+    }
+    : RegexGroup {
+        $$ = $1
+    }
+
+RegexGroup<mparse_spec_generated::RegexExpressionData>
+    : '(' HorizontalWhitespace RegexAlternative HorizontalWhitespace ')' {
+        $$ = mparse_spec_generated::makeRegexGroup($1 + $2, $3, $4 + $5)
+    }
+
+RegexLiteralOrRange<mparse_spec_generated::RegexExpressionData>
+    : Literal HorizontalWhitespace '-' HorizontalWhitespace Literal {
+        $$ = mparse_spec_generated::makeRegexRange($1, $2, $4, $5)
+    }
+    : Literal {
+        $$ = mparse_spec_generated::makeRegexLiteral($1)
+    }
+
+RegexPostfix<std::string>
+    : '*' {
+        $$ = $1
+    }
+    : '+' {
         $$ = $1
     }
 

@@ -1,0 +1,7 @@
+#include <string>
+
+// mparse: begin grammar
+Identifier<std::string>
+    : ('a'-'z' | 'A'-'Z' | '_') ('a'-'z' | 'A'-'Z' | '_' | '0'-'9')* { $$ = $1 + $2 }
+    : '0'-'9'+ { $$ = $1 }
+// mparse: end grammar

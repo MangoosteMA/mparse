@@ -17,13 +17,7 @@ Item[indent int]<std::string>
     }
 
 Label<std::string>
-    : 'project' {
-        $$ = $1
-    }
-    : 'parser' {
-        $$ = $1
-    }
-    : 'grammar' {
+    : ('a'-'z')+ {
         $$ = $1
     }
 

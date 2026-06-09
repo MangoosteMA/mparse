@@ -39,6 +39,17 @@ namespace mparse::spec {
         Rule parseRule();
         RuleItem parseRuleItem();
         RuleItemValue parseLiteralOrRange();
+        RuleItemRegex parseParenthesizedRegexRuleItem();
+        RuleItemRegex makePostfixRegexRuleItem(
+            RuleItemValue item,
+            RegexRepeatKind repeat_kind
+        );
+        RegexExpression parseRegexAlternative();
+        RegexExpression parseRegexSequence();
+        RegexExpression parseRegexRepeat();
+        RegexExpression parseRegexAtom();
+        RegexExpression parseRegexLiteralOrRange();
+        std::optional<RegexRepeatKind> consumeRegexRepeatKind();
         std::string parseRepeatCountExpression();
         std::string parseLiteralText();
         char parseEscapedLiteralChar(char value) const;

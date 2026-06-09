@@ -195,13 +195,37 @@ TEST(SpecReader, SourceTemplateInsertsContentBetweenGrammarMarkers) {
     EXPECT_EQ(specification.source_template.insert("generated\n"), readFile(sourcePath("source_template_expected.txt")));
 }
 
-TEST(SpecReader, ThrowsOnUnsupportedGroupedExpressions) {
-    EXPECT_THROW(
-        {
-            mparse::spec::readSpecificationOrThrow(sourcePath(
-                "unsupported_grouped_expression.grammar"
-            ));
-        },
-        std::runtime_error
+TEST(SpecReader, ParsesRegexExpressions) {
+    const auto specification = mparse::spec::readSpecificationOrThrow(
+        sourcePath("regex_expression.grammar")
     );
+
+    ASSERT_EQ(specification.symbols.size(), 1);
+    const auto& symbol = specification.symbols.front();
+    ASSERT_EQ(symbol.rules.size(), 2);
+    ASSERT_EQ(symbol.rules[0].items.size(), 2);
+
+    const auto* head =
+        std::get_if<mparse::spec::RuleItemRegex>(&symbol.rules[0].items[0].value);
+    ASSERT_NE(head, nullptr);
+    EXPECT_TRUE(std::holds_alternative<mparse::spec::RegexAlternative>(
+        head->expression.value
+    ));
+
+    const auto* tail =
+        std::get_if<mparse::spec::RuleItemRegex>(&symbol.rules[0].items[1].value);
+    ASSERT_NE(tail, nullptr);
+    const auto* tail_repeat =
+        std::get_if<mparse::spec::RegexRepeat>(&tail->expression.value);
+    ASSERT_NE(tail_repeat, nullptr);
+    EXPECT_EQ(tail_repeat->kind, mparse::spec::RegexRepeatKind::ZeroOrMore);
+
+    ASSERT_EQ(symbol.rules[1].items.size(), 1);
+    const auto* number =
+        std::get_if<mparse::spec::RuleItemRegex>(&symbol.rules[1].items[0].value);
+    ASSERT_NE(number, nullptr);
+    const auto* number_repeat =
+        std::get_if<mparse::spec::RegexRepeat>(&number->expression.value);
+    ASSERT_NE(number_repeat, nullptr);
+    EXPECT_EQ(number_repeat->kind, mparse::spec::RegexRepeatKind::OneOrMore);
 }

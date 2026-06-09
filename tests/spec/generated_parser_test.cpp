@@ -224,6 +224,7 @@ namespace {
 TEST(GeneratedSpecParser, MatchesHandParserOnSpecFixtures) {
     expectGeneratedParserMatchesHandParser(sourcePath("valid_spec.grammar"));
     expectGeneratedParserMatchesHandParser(sourcePath("escaped_literals.grammar"));
+    expectGeneratedParserMatchesHandParser(sourcePath("regex_expression.grammar"));
     expectGeneratedParserMatchesHandParser(sourcePath("source_template.grammar"));
 }
 
