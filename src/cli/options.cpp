@@ -45,6 +45,12 @@ namespace mparse {
         app.add_option("-o,--output", options.output, "Path to the output file")
             ->required();
 
+        app.add_option(
+            "-r,--root-symbol",
+            options.root_symbol_name,
+            "Root symbol for the generated parser"
+        );
+
         app.add_option("-l,--language", options.language, "Target language for generated grammar")
             ->transform(CLI::CheckedTransformer(string_to_language, CLI::ignore_case))
             ->option_text(buildLanguagesOptionsText())

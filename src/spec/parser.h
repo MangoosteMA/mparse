@@ -40,6 +40,7 @@ namespace mparse::spec {
         RuleItem parseRuleItem();
         RuleItemValue parseLiteralOrRange();
         std::string parseLiteralText();
+        char parseEscapedLiteralChar(char value) const;
         RuleItemSymbol parseSymbolReference();
 
         std::string_view source_;

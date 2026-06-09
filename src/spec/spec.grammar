@@ -1,0 +1,775 @@
+// mparse spec grammar.
+//
+// Version: 1.
+
+/*
+This file is the canonical grammar for mparse specification files and the
+source template for the bootstrap parser snapshot.
+
+The grammar intentionally covers only the current spec syntax: symbols with
+optional arguments and value type, literal/range/symbol rule items, rule
+actions, and surrounding source template text. Keep semantic helpers in this
+file close to the grammar rules so a new parser snapshot can be regenerated
+from one entry point.
+
+To update the snapshot, build mparse and run:
+
+    cmake --build <build-dir> --target regenerate_spec_parser
+
+Do not edit src/spec/generated/generated_parser.cpp by hand.
+*/
+
+#include <spec/data.h>
+#include <spec/generated/generated_parser.h>
+#include <spec/utils.h>
+
+#include <cstddef>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace mparse::spec::generated {
+
+    struct LiteralData {
+        std::string value;
+        std::string source;
+    };
+
+    struct ParsedRuleItem {
+        mparse::spec::RuleItem item;
+        std::string source;
+    };
+
+    struct RuleTailData {
+        std::vector<mparse::spec::RuleItem> items;
+        std::optional<std::string> action;
+        std::string source;
+    };
+
+    struct RuleData {
+        mparse::spec::Rule rule;
+        std::string source;
+    };
+
+    struct RulesData {
+        std::vector<mparse::spec::Rule> rules;
+        std::string source;
+    };
+
+    struct ParsedSymbol {
+        mparse::spec::Symbol symbol;
+        std::string leading;
+        std::string source;
+    };
+
+    struct ParsedSymbols {
+        std::vector<ParsedSymbol> symbols;
+        std::string source;
+    };
+
+    struct SourcePosition {
+        size_t line = 1;
+        size_t column = 1;
+    };
+
+    std::string oneChar(char value) {
+        return std::string(1, value);
+    }
+
+    LiteralData emptyLiteralData() {
+        return {};
+    }
+
+    LiteralData prependLiteralChar(std::string value, const LiteralData& tail) {
+        return LiteralData{
+            .value = value + tail.value,
+            .source = value + tail.source,
+        };
+    }
+
+    LiteralData prependEscapedLiteralChar(
+        const LiteralData& escaped,
+        const LiteralData& tail
+    ) {
+        return LiteralData{
+            .value = escaped.value + tail.value,
+            .source = "\\" + escaped.source + tail.source,
+        };
+    }
+
+    LiteralData makeEscapedLiteralChar(std::string source) {
+        if (source == "n") {
+            return LiteralData{.value = "\n", .source = std::move(source)};
+        }
+        if (source == "t") {
+            return LiteralData{.value = "\t", .source = std::move(source)};
+        }
+        return LiteralData{.value = source, .source = std::move(source)};
+    }
+
+    LiteralData makeLiteral(const LiteralData& content) {
+        return LiteralData{
+            .value = content.value,
+            .source = "'" + content.source + "'",
+        };
+    }
+
+    ParsedRuleItem makeLiteralItem(const LiteralData& literal) {
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemLiteral{.value = literal.value},
+            },
+            .source = literal.source,
+        };
+    }
+
+    ParsedRuleItem makeRangeItem(
+        const LiteralData& from,
+        std::string horizontal_whitespace_left,
+        std::string horizontal_whitespace_right,
+        const LiteralData& to
+    ) {
+        if (from.value.size() != 1 || to.value.size() != 1) {
+            throw std::runtime_error("range boundaries must be one-character literals");
+        }
+
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemRange{
+                    .from = from.value.front(),
+                    .to = to.value.front(),
+                },
+            },
+            .source = from.source + horizontal_whitespace_left + "-" +
+                      horizontal_whitespace_right + to.source,
+        };
+    }
+
+    std::vector<std::string> splitCommaSeparatedExpressions(std::string_view content) {
+        content = mparse::spec::trim(content);
+
+        std::vector<std::string> result;
+        size_t begin = 0;
+        size_t depth = 0;
+        bool inside_literal = false;
+        bool escaped = false;
+
+        for (size_t index = 0; index < content.size(); index++) {
+            const char current = content[index];
+
+            if (inside_literal) {
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '\'') {
+                    inside_literal = false;
+                }
+                continue;
+            }
+
+            if (current == '\'') {
+                inside_literal = true;
+            } else if (current == '[' || current == '(' || current == '<' || current == '{') {
+                depth++;
+            } else if (current == ']' || current == ')' || current == '>' || current == '}') {
+                if (depth > 0) {
+                    depth--;
+                }
+            } else if (current == ',' && depth == 0) {
+                result.push_back(mparse::spec::trim(content.substr(begin, index - begin)));
+                begin = index + 1;
+            }
+        }
+
+        const auto last = mparse::spec::trim(content.substr(begin));
+        if (!last.empty()) {
+            result.push_back(last);
+        }
+        return result;
+    }
+
+    std::vector<mparse::spec::SymbolArgument> parseSymbolArguments(
+        std::string_view content
+    ) {
+        std::vector<mparse::spec::SymbolArgument> arguments;
+        for (const auto& raw_argument : splitCommaSeparatedExpressions(content)) {
+            const size_t split = raw_argument.find_last_of(" \t");
+            if (split == std::string::npos) {
+                throw std::runtime_error(
+                    "symbol argument must have name and type: " + raw_argument
+                );
+            }
+
+            arguments.push_back(mparse::spec::SymbolArgument{
+                .name = mparse::spec::trim(std::string_view{raw_argument}.substr(0, split)),
+                .type = mparse::spec::trim(std::string_view{raw_argument}.substr(split + 1)),
+            });
+        }
+        return arguments;
+    }
+
+    ParsedRuleItem makeSymbolReference(
+        std::string name,
+        std::string horizontal_whitespace,
+        std::string arguments
+    ) {
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemSymbol{
+                    .name = name,
+                    .arguments = splitCommaSeparatedExpressions(arguments),
+                },
+            },
+            .source = name + horizontal_whitespace + "[" + arguments + "]",
+        };
+    }
+
+    ParsedRuleItem makeSymbolReference(std::string name) {
+        return ParsedRuleItem{
+            .item = mparse::spec::RuleItem{
+                .value = mparse::spec::RuleItemSymbol{.name = name},
+            },
+            .source = std::move(name),
+        };
+    }
+
+    RuleTailData emptyRuleTail() {
+        return {};
+    }
+
+    RuleTailData makeActionTail(std::string action) {
+        return RuleTailData{
+            .action = mparse::spec::trim(action),
+            .source = "{" + action + "}",
+        };
+    }
+
+    RuleTailData prependRuleItem(
+        const ParsedRuleItem& item,
+        const RuleTailData& tail
+    ) {
+        RuleTailData result = tail;
+        result.items.insert(result.items.begin(), item.item);
+        result.source = item.source + tail.source;
+        return result;
+    }
+
+    RuleTailData prependHorizontalSpaces(
+        std::string spaces,
+        const RuleTailData& tail
+    ) {
+        RuleTailData result = tail;
+        result.source = spaces + tail.source;
+        return result;
+    }
+
+    RuleTailData makeRuleBody(const ParsedRuleItem& item, const RuleTailData& tail) {
+        return prependRuleItem(item, tail);
+    }
+
+    RuleTailData makeRuleBodyFromAction(std::string action) {
+        return makeActionTail(std::move(action));
+    }
+
+    RuleData makeRule(std::string prefix, const RuleTailData& body) {
+        return RuleData{
+            .rule = mparse::spec::Rule{
+                .items = body.items,
+                .action = body.action,
+            },
+            .source = std::move(prefix) + body.source,
+        };
+    }
+
+    RulesData makeRules(const RuleData& rule) {
+        return RulesData{
+            .rules = {rule.rule},
+            .source = rule.source,
+        };
+    }
+
+    RulesData appendRule(const RulesData& rules, std::string whitespace, const RuleData& rule) {
+        RulesData result = rules;
+        result.rules.push_back(rule.rule);
+        result.source += whitespace + rule.source;
+        return result;
+    }
+
+    ParsedSymbol makeSymbol(
+        std::string name,
+        std::string horizontal_whitespace,
+        std::string whitespace,
+        const RulesData& rules
+    ) {
+        return ParsedSymbol{
+            .symbol = mparse::spec::Symbol{
+                .name = name,
+                .rules = rules.rules,
+            },
+            .source = name + horizontal_whitespace + whitespace + rules.source,
+        };
+    }
+
+    ParsedSymbol makeSymbolWithArguments(
+        std::string name,
+        std::string horizontal_whitespace_before_arguments,
+        std::string arguments,
+        std::string horizontal_whitespace_after_arguments,
+        std::string whitespace,
+        const RulesData& rules
+    ) {
+        return ParsedSymbol{
+            .symbol = mparse::spec::Symbol{
+                .name = name,
+                .arguments = parseSymbolArguments(arguments),
+                .rules = rules.rules,
+            },
+            .source = name + horizontal_whitespace_before_arguments + "[" + arguments + "]" +
+                      horizontal_whitespace_after_arguments + whitespace + rules.source,
+        };
+    }
+
+    ParsedSymbol makeSymbolWithType(
+        std::string name,
+        std::string horizontal_whitespace_before_type,
+        std::string type,
+        std::string horizontal_whitespace_after_type,
+        std::string whitespace,
+        const RulesData& rules
+    ) {
+        return ParsedSymbol{
+            .symbol = mparse::spec::Symbol{
+                .name = name,
+                .type = mparse::spec::trim(type),
+                .rules = rules.rules,
+            },
+            .source = name + horizontal_whitespace_before_type + "<" + type + ">" +
+                      horizontal_whitespace_after_type + whitespace + rules.source,
+        };
+    }
+
+    ParsedSymbol makeSymbolWithArgumentsAndType(
+        std::string name,
+        std::string horizontal_whitespace_before_arguments,
+        std::string arguments,
+        std::string horizontal_whitespace_before_type,
+        std::string type,
+        std::string horizontal_whitespace_after_type,
+        std::string whitespace,
+        const RulesData& rules
+    ) {
+        return ParsedSymbol{
+            .symbol = mparse::spec::Symbol{
+                .name = name,
+                .type = mparse::spec::trim(type),
+                .arguments = parseSymbolArguments(arguments),
+                .rules = rules.rules,
+            },
+            .source = name + horizontal_whitespace_before_arguments + "[" + arguments + "]" +
+                      horizontal_whitespace_before_type + "<" + type + ">" +
+                      horizontal_whitespace_after_type + whitespace + rules.source,
+        };
+    }
+
+    ParsedSymbols makeSymbols(const ParsedSymbol& symbol) {
+        return ParsedSymbols{
+            .symbols = {symbol},
+            .source = symbol.source,
+        };
+    }
+
+    ParsedSymbols appendSymbol(
+        const ParsedSymbols& symbols,
+        std::string whitespace,
+        const ParsedSymbol& symbol
+    ) {
+        ParsedSymbols result = symbols;
+        auto next_symbol = symbol;
+        next_symbol.leading = whitespace;
+        result.symbols.push_back(std::move(next_symbol));
+        result.source += whitespace + symbol.source;
+        return result;
+    }
+
+    void advanceSourcePosition(SourcePosition& position, std::string_view source) {
+        for (const char current : source) {
+            if (current == '\n') {
+                position.line++;
+                position.column = 1;
+            } else {
+                position.column++;
+            }
+        }
+    }
+
+    std::vector<mparse::spec::Symbol> finalizeSymbols(
+        std::string leading_whitespace,
+        const ParsedSymbols& symbols
+    ) {
+        SourcePosition position;
+        advanceSourcePosition(position, leading_whitespace);
+
+        std::vector<mparse::spec::Symbol> result;
+        result.reserve(symbols.symbols.size());
+
+        for (const auto& parsed_symbol : symbols.symbols) {
+            advanceSourcePosition(position, parsed_symbol.leading);
+            auto symbol = parsed_symbol.symbol;
+            symbol.source_reference = mparse::spec::SourceReference{
+                .line = position.line,
+                .column = position.column,
+            };
+            result.push_back(std::move(symbol));
+            advanceSourcePosition(position, parsed_symbol.source);
+        }
+
+        return result;
+    }
+
+} // namespace mparse::spec::generated
+
+namespace mparse_spec_generated = mparse::spec::generated;
+
+// mparse: begin grammar
+
+Spec<std::vector<mparse::spec::Symbol>>
+    : Whitespace Symbols Whitespace {
+        $$ = mparse_spec_generated::finalizeSymbols($1, $2)
+    }
+
+Symbols<mparse_spec_generated::ParsedSymbols>
+    : Symbol {
+        $$ = mparse_spec_generated::makeSymbols($1)
+    }
+    : Symbols Whitespace Symbol {
+        $$ = mparse_spec_generated::appendSymbol($1, $2, $3)
+    }
+
+Symbol<mparse_spec_generated::ParsedSymbol>
+    : Identifier HorizontalWhitespace Whitespace Rules {
+        $$ = mparse_spec_generated::makeSymbol($1, $2, $3, $4)
+    }
+    : Identifier HorizontalWhitespace '[' SquareContent ']' HorizontalWhitespace Whitespace Rules {
+        $$ = mparse_spec_generated::makeSymbolWithArguments($1, $2, $4, $6, $7, $8)
+    }
+    : Identifier HorizontalWhitespace '<' AngleContent '>' HorizontalWhitespace Whitespace Rules {
+        $$ = mparse_spec_generated::makeSymbolWithType($1, $2, $4, $6, $7, $8)
+    }
+    : Identifier HorizontalWhitespace '[' SquareContent ']' HorizontalWhitespace '<' AngleContent '>' HorizontalWhitespace Whitespace Rules {
+        $$ = mparse_spec_generated::makeSymbolWithArgumentsAndType($1, $2, $4, $6, $8, $10, $11, $12)
+    }
+
+Rules<mparse_spec_generated::RulesData>
+    : Rule {
+        $$ = mparse_spec_generated::makeRules($1)
+    }
+    : Rules Whitespace Rule {
+        $$ = mparse_spec_generated::appendRule($1, $2, $3)
+    }
+
+Rule<mparse_spec_generated::RuleData>
+    : ':' HorizontalWhitespace RuleBody {
+        $$ = mparse_spec_generated::makeRule($1 + $2, $3)
+    }
+
+RuleBody<mparse_spec_generated::RuleTailData>
+    : {
+        $$ = mparse_spec_generated::emptyRuleTail()
+    }
+    : '{' BraceContent '}' {
+        $$ = mparse_spec_generated::makeRuleBodyFromAction($2)
+    }
+    : RuleItem RuleTail {
+        $$ = mparse_spec_generated::makeRuleBody($1, $2)
+    }
+
+RuleTail<mparse_spec_generated::RuleTailData>
+    : {
+        $$ = mparse_spec_generated::emptyRuleTail()
+    }
+    : '{' BraceContent '}' {
+        $$ = mparse_spec_generated::makeActionTail($2)
+    }
+    : HorizontalSpaces RuleTailAfterSpaces {
+        $$ = mparse_spec_generated::prependHorizontalSpaces($1, $2)
+    }
+
+RuleTailAfterSpaces<mparse_spec_generated::RuleTailData>
+    : RuleItem RuleTail {
+        $$ = mparse_spec_generated::prependRuleItem($1, $2)
+    }
+    : '{' BraceContent '}' {
+        $$ = mparse_spec_generated::makeActionTail($2)
+    }
+
+HorizontalSpaces<std::string>
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : HorizontalSpace HorizontalSpaces {
+        $$ = $1 + $2
+    }
+
+RuleItem<mparse_spec_generated::ParsedRuleItem>
+    : LiteralOrRange {
+        $$ = $1
+    }
+    : SymbolReference {
+        $$ = $1
+    }
+
+LiteralOrRange<mparse_spec_generated::ParsedRuleItem>
+    : Literal HorizontalWhitespace '-' HorizontalWhitespace Literal {
+        $$ = mparse_spec_generated::makeRangeItem($1, $2, $4, $5)
+    }
+    : Literal {
+        $$ = mparse_spec_generated::makeLiteralItem($1)
+    }
+
+SymbolReference<mparse_spec_generated::ParsedRuleItem>
+    : Identifier {
+        $$ = mparse_spec_generated::makeSymbolReference($1)
+    }
+    : Identifier HorizontalWhitespace '[' SquareContent ']' {
+        $$ = mparse_spec_generated::makeSymbolReference($1, $2, $4)
+    }
+
+Identifier<std::string>
+    : IdentifierStart {
+        $$ = $1
+    }
+    : Identifier IdentifierPart {
+        $$ = $1 + $2
+    }
+
+IdentifierStart<std::string>
+    : 'a'-'z' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : 'A'-'Z' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '_' {
+        $$ = $1
+    }
+
+IdentifierPart<std::string>
+    : IdentifierStart {
+        $$ = $1
+    }
+    : '0'-'9' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+
+Whitespace<std::string>
+    : {
+        $$ = ""
+    }
+    : WhitespaceChar Whitespace {
+        $$ = $1 + $2
+    }
+
+HorizontalWhitespace<std::string>
+    : {
+        $$ = ""
+    }
+    : HorizontalSpace HorizontalWhitespace {
+        $$ = $1 + $2
+    }
+
+WhitespaceChar<std::string>
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : LineBreak {
+        $$ = $1
+    }
+
+HorizontalSpace<std::string>
+    : ' ' {
+        $$ = $1
+    }
+    : '	' {
+        $$ = $1
+    }
+
+LineBreak<std::string>
+    : '\n' {
+        $$ = $1
+    }
+
+BraceContent<std::string>
+    : {
+        $$ = ""
+    }
+    : BracePlainChar BraceContent {
+        $$ = $1 + $2
+    }
+    : Literal BraceContent {
+        $$ = $1.source + $2
+    }
+    : '{' BraceContent '}' BraceContent {
+        $$ = $1 + $2 + $3 + $4
+    }
+
+BracePlainChar<std::string>
+    : LineBreak {
+        $$ = $1
+    }
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : '!'-'&' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '('-'z' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '|' {
+        $$ = $1
+    }
+    : '~' {
+        $$ = $1
+    }
+
+SquareContent<std::string>
+    : {
+        $$ = ""
+    }
+    : SquarePlainChar SquareContent {
+        $$ = $1 + $2
+    }
+    : Literal SquareContent {
+        $$ = $1.source + $2
+    }
+    : '[' SquareContent ']' SquareContent {
+        $$ = $1 + $2 + $3 + $4
+    }
+
+SquarePlainChar<std::string>
+    : LineBreak {
+        $$ = $1
+    }
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : '!'-'&' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '('-'Z' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : Backslash {
+        $$ = $1
+    }
+    : '^'-'~' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+
+AngleContent<std::string>
+    : {
+        $$ = ""
+    }
+    : AnglePlainChar AngleContent {
+        $$ = $1 + $2
+    }
+    : Literal AngleContent {
+        $$ = $1.source + $2
+    }
+    : '<' AngleContent '>' AngleContent {
+        $$ = $1 + $2 + $3 + $4
+    }
+
+AnglePlainChar<std::string>
+    : LineBreak {
+        $$ = $1
+    }
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : '!'-'&' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '('-';' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '=' {
+        $$ = $1
+    }
+    : '?'-'~' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+
+Literal<mparse_spec_generated::LiteralData>
+    : Quote LiteralContent Quote {
+        $$ = mparse_spec_generated::makeLiteral($2)
+    }
+
+LiteralContent<mparse_spec_generated::LiteralData>
+    : {
+        $$ = mparse_spec_generated::emptyLiteralData()
+    }
+    : LiteralChar LiteralContent {
+        $$ = mparse_spec_generated::prependLiteralChar($1, $2)
+    }
+    : Backslash EscapedLiteralChar LiteralContent {
+        $$ = mparse_spec_generated::prependEscapedLiteralChar($2, $3)
+    }
+
+LiteralChar<std::string>
+    : LineBreak {
+        $$ = $1
+    }
+    : HorizontalSpace {
+        $$ = $1
+    }
+    : '!'-'&' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : '('-'[' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+    : ']'-'~' {
+        $$ = mparse_spec_generated::oneChar($1)
+    }
+
+EscapedLiteralChar<mparse_spec_generated::LiteralData>
+    : LiteralChar {
+        $$ = mparse_spec_generated::makeEscapedLiteralChar($1)
+    }
+    : Quote {
+        $$ = mparse_spec_generated::makeEscapedLiteralChar($1)
+    }
+    : Backslash {
+        $$ = mparse_spec_generated::makeEscapedLiteralChar($1)
+    }
+    : 'n' {
+        $$ = mparse_spec_generated::makeEscapedLiteralChar($1)
+    }
+    : 't' {
+        $$ = mparse_spec_generated::makeEscapedLiteralChar($1)
+    }
+
+Quote<std::string>
+    : '\'' {
+        $$ = $1
+    }
+
+Backslash<std::string>
+    : '\\' {
+        $$ = $1
+    }
+
+// mparse: end grammar
+
+namespace mparse::spec::generated {
+
+    std::optional<std::vector<mparse::spec::Symbol>> parseSymbols(std::string_view source) {
+        return ::parse(source);
+    }
+
+} // namespace mparse::spec::generated

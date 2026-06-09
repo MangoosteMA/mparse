@@ -290,7 +290,7 @@ namespace mparse::spec {
             const char current = consume();
 
             if (escaped) {
-                result.push_back(current);
+                result.push_back(parseEscapedLiteralChar(current));
                 escaped = false;
             } else if (current == '\\') {
                 escaped = true;
@@ -302,6 +302,20 @@ namespace mparse::spec {
         }
 
         fail("expected closing literal quote");
+    }
+
+    char Parser::parseEscapedLiteralChar(char value) const {
+        switch (value) {
+            case 'n':
+                return '\n';
+            case 't':
+                return '\t';
+            case '\\':
+            case '\'':
+                return value;
+            default:
+                return value;
+        }
     }
 
     RuleItemSymbol Parser::parseSymbolReference() {

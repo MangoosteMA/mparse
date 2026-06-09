@@ -53,7 +53,7 @@ int main(int argc, char* argv[]) {
         automata,
         mparse::codegen::GenerationOptions{
             .language = toCodegenLanguage(options.language),
-            .root_symbol_name = specification.symbols.front().name,
+            .root_symbol_name = options.root_symbol_name,
         }
     );
 

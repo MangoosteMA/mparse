@@ -89,6 +89,37 @@ TEST(SpecReader, DetectsEmptyLiteralAndRangeItems) {
     EXPECT_FALSE((mparse::spec::RuleItemRange{.from = 'a', .to = 'a'}).empty());
 }
 
+TEST(SpecReader, ParsesEscapedLiteralCharacters) {
+    const auto specification = mparse::spec::readSpecificationOrThrow(
+        sourcePath("escaped_literals.grammar")
+    );
+
+    ASSERT_EQ(specification.symbols.size(), 1);
+    const auto& symbol = specification.symbols[0];
+    ASSERT_EQ(symbol.rules.size(), 4);
+
+    const auto* newline =
+        std::get_if<mparse::spec::RuleItemLiteral>(&symbol.rules[0].items[0].value);
+    ASSERT_NE(newline, nullptr);
+    EXPECT_EQ(newline->value, "\n");
+
+    const auto* tab_to_newline =
+        std::get_if<mparse::spec::RuleItemRange>(&symbol.rules[1].items[0].value);
+    ASSERT_NE(tab_to_newline, nullptr);
+    EXPECT_EQ(tab_to_newline->from, '\t');
+    EXPECT_EQ(tab_to_newline->to, '\n');
+
+    const auto* backslash =
+        std::get_if<mparse::spec::RuleItemLiteral>(&symbol.rules[2].items[0].value);
+    ASSERT_NE(backslash, nullptr);
+    EXPECT_EQ(backslash->value, "\\");
+
+    const auto* quote =
+        std::get_if<mparse::spec::RuleItemLiteral>(&symbol.rules[3].items[0].value);
+    ASSERT_NE(quote, nullptr);
+    EXPECT_EQ(quote->value, "'");
+}
+
 TEST(SpecReader, SourceTemplateInsertsContentBetweenGrammarMarkers) {
     const auto specification =
         mparse::spec::readSpecificationOrThrow(sourcePath("source_template.grammar"));

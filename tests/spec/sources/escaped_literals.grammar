@@ -1,0 +1,11 @@
+#include <string>
+
+// mparse: begin grammar
+
+Escapes<char>
+    : '\n' { $$ = $1 }
+    : '\t'-'\n' { $$ = $1 }
+    : '\\' { $$ = $1 }
+    : '\'' { $$ = $1 }
+
+// mparse: end grammar

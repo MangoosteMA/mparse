@@ -12,18 +12,24 @@ std::string makeB() {
 // mparse: begin grammar
 
 S<std::string>
-    : A B C{$$ = $1 + $2 + $3}
+    : A B C {
+        $$ = $1 + $2 + $3
+    }
 
-      A<std::string>
-    : {$$ = makeA()}
+A<std::string>
+    : {
+        $$ = makeA()
+    }
 
-      B<std::string>
-    : {$$ = makeB()}
+B<std::string>
+    : {
+        $$ = makeB()
+    }
 
-      C<std::string>
+C<std::string>
     : 'c' {
-    $$ = $1
-}
+        $$ = $1
+    }
 
 // mparse: end grammar
 

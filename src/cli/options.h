@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace mparse {
 
@@ -11,6 +12,7 @@ namespace mparse {
     struct CLIOptions {
         std::filesystem::path grammar;
         std::filesystem::path output;
+        std::string root_symbol_name;
         GenerationLanguage language = GenerationLanguage::Cpp;
         bool check_nonprogressing_cycles = true;
         int verbose = 0;

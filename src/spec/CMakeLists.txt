@@ -1,5 +1,6 @@
 add_library(mparse_spec
     data.cpp
+    generated/generated_parser.cpp
     parser.cpp
     spec.cpp
     utils.cpp
